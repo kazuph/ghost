@@ -122,9 +122,7 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Commands::Run { command, cwd, env }) => {
-            commands::spawn(command, cwd, env)
-        }
+        Some(Commands::Run { command, cwd, env }) => commands::spawn(command, cwd, env),
         Some(Commands::List { status, all }) => commands::list(status, all),
         Some(Commands::Log {
             task_id,

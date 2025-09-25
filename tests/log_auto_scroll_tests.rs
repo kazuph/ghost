@@ -2,8 +2,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ghost::app::config::Config;
 use ghost::app::storage::task::Task;
 use ghost::app::storage::task_status::TaskStatus;
-use ghost::app::tui::app::TuiApp;
 use ghost::app::tui::ViewMode;
+use ghost::app::tui::app::TuiApp;
 use std::fs;
 use tempfile::TempDir;
 
@@ -50,7 +50,7 @@ impl Drop for TestEnvironment {
 }
 
 #[test]
-fn test_log_auto_scroll_toggle() {
+fn test_auto_scroll_enabled_toggle() {
     let env = TestEnvironment::new();
     let mut app = TuiApp::new_with_config(env.config.clone()).unwrap();
 
@@ -77,25 +77,25 @@ fn test_log_auto_scroll_toggle() {
     app.tasks = vec![task];
     app.table_scroll.set_total_items(1);
 
-    // Initially auto-scroll should be false
-    assert!(!app.log_auto_scroll);
+    // Initially auto-scroll should be true
+    assert!(app.auto_scroll_enabled);
 
     // Enter log view
     let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     app.handle_key(key_enter).unwrap();
     assert_eq!(app.view_mode, ViewMode::LogView);
 
-    // Auto-scroll should still be false after entering log view
-    assert!(!app.log_auto_scroll);
+    // Auto-scroll should remain enabled after entering log view
+    assert!(app.auto_scroll_enabled);
 
-    // Press 'f' to enable auto-scroll
-    let key_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
-    app.handle_key(key_f.clone()).unwrap();
-    assert!(app.log_auto_scroll);
+    // Press Ctrl+F to toggle auto-scroll off/on
+    let key_ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    app.handle_key(key_ctrl_f).unwrap();
+    assert!(!app.auto_scroll_enabled);
 
-    // Press 'f' again to disable auto-scroll
-    app.handle_key(key_f).unwrap();
-    assert!(!app.log_auto_scroll);
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+        .unwrap();
+    assert!(app.auto_scroll_enabled);
 }
 
 #[test]
@@ -130,34 +130,29 @@ fn test_auto_scroll_disabled_by_manual_scroll() {
     let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     app.handle_key(key_enter).unwrap();
 
-    let key_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
-    app.handle_key(key_f).unwrap();
-    assert!(app.log_auto_scroll);
-
     // Manual scroll with 'j' should disable auto-scroll
     let key_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
     app.handle_key(key_j).unwrap();
-    assert!(!app.log_auto_scroll);
+    assert!(!app.auto_scroll_enabled);
 
     // Re-enable auto-scroll
-    let key_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
-    app.handle_key(key_f).unwrap();
-    assert!(app.log_auto_scroll);
+    let key_ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    app.handle_key(key_ctrl_f).unwrap();
+    assert!(app.auto_scroll_enabled);
 
     // Manual scroll with 'k' should disable auto-scroll
     let key_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
     app.handle_key(key_k).unwrap();
-    assert!(!app.log_auto_scroll);
+    assert!(!app.auto_scroll_enabled);
 
     // Re-enable auto-scroll
-    let key_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
-    app.handle_key(key_f).unwrap();
-    assert!(app.log_auto_scroll);
+    app.handle_key(key_ctrl_f).unwrap();
+    assert!(app.auto_scroll_enabled);
 
     // Manual scroll with Ctrl+D should disable auto-scroll
     let key_ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
     app.handle_key(key_ctrl_d).unwrap();
-    assert!(!app.log_auto_scroll);
+    assert!(!app.auto_scroll_enabled);
 }
 
 #[test]
@@ -192,18 +187,18 @@ fn test_auto_scroll_reset_on_exit() {
     let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     app.handle_key(key_enter).unwrap();
 
-    let key_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
-    app.handle_key(key_f).unwrap();
-    assert!(app.log_auto_scroll);
+    let key_ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    app.handle_key(key_ctrl_f).unwrap();
+    assert!(!app.auto_scroll_enabled);
 
     // Exit log view with 'q'
     let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
     app.handle_key(key_q).unwrap();
     assert_eq!(app.view_mode, ViewMode::TaskList);
-    assert!(!app.log_auto_scroll); // Should be reset
+    assert!(!app.auto_scroll_enabled); // Should be reset
 
     // Re-enter log view
     app.handle_key(key_enter).unwrap();
     assert_eq!(app.view_mode, ViewMode::LogView);
-    assert!(!app.log_auto_scroll); // Should start as false
+    assert!(app.auto_scroll_enabled); // Should start enabled again
 }

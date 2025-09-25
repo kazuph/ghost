@@ -2,7 +2,6 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect, Size},
     style::{Color, Style},
-    symbols,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, StatefulWidget, Widget},
 };
@@ -18,7 +17,7 @@ pub struct LogViewerScrollWidget {
     lines: Vec<String>,
     task_id: String,
     command: String,
-    cwd: Option<String>,
+    _cwd: Option<String>,
     auto_scroll_enabled: bool,
 }
 
@@ -30,7 +29,7 @@ impl LogViewerScrollWidget {
             lines,
             task_id: task.id.clone(),
             command: Self::parse_command(&task.command),
-            cwd: task.cwd.clone(),
+            _cwd: task.cwd.clone(),
             auto_scroll_enabled,
         }
     }
@@ -45,7 +44,7 @@ impl LogViewerScrollWidget {
             lines: cached_lines,
             task_id: task.id.clone(),
             command: Self::parse_command(&task.command),
-            cwd: task.cwd.clone(),
+            _cwd: task.cwd.clone(),
             auto_scroll_enabled,
         }
     }
@@ -83,7 +82,7 @@ impl LogViewerScrollWidget {
             lines: existing_lines,
             task_id: task.id.clone(),
             command: Self::parse_command(&task.command),
-            cwd: task.cwd.clone(),
+            _cwd: task.cwd.clone(),
             auto_scroll_enabled,
         }
     }
@@ -128,12 +127,15 @@ impl LogViewerScrollWidget {
 
     /// Create footer widget
 
-    fn create_footer(&self) -> Paragraph {
-        let auto_scroll_status = if self.auto_scroll_enabled { "ON" } else { "OFF" };
+    fn create_footer(&self) -> Paragraph<'_> {
+        let auto_scroll_status = if self.auto_scroll_enabled {
+            "ON"
+        } else {
+            "OFF"
+        };
         let keybinds = format!(
-            " j/k:Scroll  h/l:Horizontal  C-d/C-u:Page  gg/G:Top/Bottom  f:Auto({auto_scroll_status})  d:Details  /:Search  q/Esc:Back "
+            " j/k:Scroll  h/l:H-Scroll  g/G:Top/Bot  C-d/u:Page  C-f:Auto({auto_scroll_status})  Esc:Back  q "
         );
-
 
         Paragraph::new(keybinds).block(
             Block::default()
@@ -170,11 +172,7 @@ impl StatefulWidget for LogViewerScrollWidget {
         let content_size = Size::new(content_width, content_height);
 
         // Create a block for the content area with borders and title
-        let title = if let Some(cwd) = &self.cwd {
-            format!(" {} - {} - {} ", cwd, self.task_id, self.command)
-        } else {
-            format!(" {} - {} ", self.task_id, self.command)
-        };
+        let title = format!(" {} - {} ", self.task_id, self.command);
         let content_block = Block::default()
             .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
             .border_style(Style::default().fg(Color::LightMagenta))
@@ -187,19 +185,17 @@ impl StatefulWidget for LogViewerScrollWidget {
         content_block.render(chunks[0], buf);
 
         // Draw the separator line between content and footer
-        // The separator is at the top of the footer block (chunks[1].y)
         if chunks[1].y > 0 {
             // Left connection: ├
-            buf[(chunks[0].x, chunks[1].y)].set_symbol(symbols::line::VERTICAL_RIGHT);
+            buf[(chunks[0].x, chunks[1].y)].set_symbol("├");
 
             // Horizontal line
             for x in chunks[0].x + 1..chunks[0].x + chunks[0].width - 1 {
-                buf[(x, chunks[1].y)].set_symbol(symbols::line::HORIZONTAL);
+                buf[(x, chunks[1].y)].set_symbol("─");
             }
 
             // Right connection: ┤
-            buf[(chunks[0].x + chunks[0].width - 1, chunks[1].y)]
-                .set_symbol(symbols::line::VERTICAL_LEFT);
+            buf[(chunks[0].x + chunks[0].width - 1, chunks[1].y)].set_symbol("┤");
         }
 
         // Create scroll view with content size and hide scrollbars
@@ -252,8 +248,8 @@ impl StatefulWidget for LogViewerScrollWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -282,7 +278,7 @@ mod tests {
         temp_file.flush().unwrap();
 
         let task = create_test_task(temp_file.path().to_string_lossy().to_string());
-        let widget = LogViewerScrollWidget::new(&task);
+        let widget = LogViewerScrollWidget::new(&task, false);
 
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -303,8 +299,8 @@ mod tests {
 
         // Check footer
         assert!(content.contains("j/k:Scroll"));
-        assert!(content.contains("h/l:Horizontal"));
-        assert!(content.contains("gg/G:Top/Bottom"));
+        assert!(content.contains("h/l:H-Scroll"));
+        assert!(content.contains("g/G:Top/Bot"));
 
         // Check content with line numbers (dynamic width)
         assert!(content.contains("1 Line 1"));
@@ -322,7 +318,7 @@ mod tests {
         temp_file.flush().unwrap();
 
         let task = create_test_task(temp_file.path().to_string_lossy().to_string());
-        let widget = LogViewerScrollWidget::new(&task);
+        let widget = LogViewerScrollWidget::new(&task, false);
 
         // Should only load MAX_LINES_IN_MEMORY lines
         assert_eq!(widget.get_lines_count(), MAX_LINES_IN_MEMORY);
@@ -336,7 +332,7 @@ mod tests {
     #[test]
     fn test_error_handling() {
         let task = create_test_task("/non/existent/file.log".to_string());
-        let widget = LogViewerScrollWidget::new(&task);
+        let widget = LogViewerScrollWidget::new(&task, false);
 
         // Should have error message
         assert_eq!(widget.get_lines_count(), 1);
@@ -352,7 +348,7 @@ mod tests {
             "Cached line 3".to_string(),
         ];
 
-        let widget = LogViewerScrollWidget::with_cached_content(&task, cached_lines.clone());
+        let widget = LogViewerScrollWidget::with_cached_content(&task, cached_lines.clone(), false);
 
         assert_eq!(widget.get_lines_count(), 3);
         assert_eq!(widget.get_lines(), &cached_lines);
@@ -376,8 +372,12 @@ mod tests {
         temp_file.flush().unwrap();
 
         // Load incrementally
-        let widget =
-            LogViewerScrollWidget::load_incremental_content(&task, existing_lines, initial_size);
+        let widget = LogViewerScrollWidget::load_incremental_content(
+            &task,
+            existing_lines,
+            initial_size,
+            false,
+        );
 
         assert_eq!(widget.get_lines_count(), 4);
         let lines = widget.get_lines();

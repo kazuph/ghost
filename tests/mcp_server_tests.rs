@@ -241,7 +241,8 @@ async fn ghost_log_returns_task_log_contents() {
     let response = call_tool(&handler, "ghost_log", json!({ "id": "task-log" })).await;
 
     let payload = text_content(&response);
-    assert_eq!(payload, log_body);
+    assert!(payload.starts_with(log_body));
+    assert!(payload.contains("Task completed"));
 }
 
 #[tokio::test]

@@ -108,18 +108,6 @@ impl<'a> ProcessDetailsWidget<'a> {
         // Build info lines
         let info_lines = vec![
             Line::from(vec![
-                Span::styled("Directory: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(self.task.cwd.as_deref().unwrap_or("N/A")),
-            ]),
-            Line::from(vec![
-                Span::styled("Started: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(started_time),
-            ]),
-            Line::from(vec![
-                Span::styled("Log File: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(&self.task.log_path),
-            ]),
-            Line::from(vec![
                 Span::styled("Task ID: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(&self.task.id),
             ]),
@@ -137,6 +125,18 @@ impl<'a> ProcessDetailsWidget<'a> {
                 Span::raw(" | "),
                 Span::styled("PGID: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(self.task.pgid.map_or("N/A".to_string(), |p| p.to_string())),
+            ]),
+            Line::from(vec![
+                Span::styled("Started: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(started_time),
+            ]),
+            Line::from(vec![
+                Span::styled("Directory: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(self.task.cwd.as_deref().unwrap_or("N/A")),
+            ]),
+            Line::from(vec![
+                Span::styled("Log File: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&self.task.log_path),
             ]),
         ];
 

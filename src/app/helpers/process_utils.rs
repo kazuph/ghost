@@ -73,20 +73,20 @@ mod tests {
 
     #[test]
     fn test_wait_for_process_termination() {
-        // Spawn a short-lived process
+        // Spawn a process we can terminate deterministically
         let mut child = Command::new("sleep")
-            .arg("0.1")
+            .arg("5")
             .spawn()
             .expect("Failed to spawn process");
 
         let pid = child.id();
 
-        // Process should terminate within 500ms
-        let terminated = wait_for_process_termination(pid, Duration::from_millis(500)).unwrap();
-        assert!(terminated);
-
-        // Clean up zombie
+        // Kill the process and ensure our helper detects the termination
+        child.kill().expect("failed to kill child process");
         let _ = child.wait();
+
+        let terminated = wait_for_process_termination(pid, Duration::from_millis(1_500)).unwrap();
+        assert!(terminated);
     }
 
     #[test]

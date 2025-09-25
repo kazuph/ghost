@@ -1,10 +1,9 @@
 ┌ Process Details ─────────────────────────────────────────────────────────────┐
 │Task ID: test-task-id                                                         │
 │Command: echo hello world                                                     │
-│Status: exited (16m 40s)                                                      │
 │PID: 5678 | PGID: 5678                                                        │
+│Started: 2001-09-09 01:46:40                                                  │
 │Directory: /tmp/test                                                          │
-│Log File: /tmp/ghost/logs/test.log                                            │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ Listening Ports ─────────────────────────────────────────────────────────────┐
 │Process not running                                                           │
@@ -16,5 +15,5 @@
 │                                                                              │
 │                                                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│          [q] Quit  [Esc] Back to list  [j/k] Scroll  [C-d/C-u] Page          │
+│[l] View logs  [c] Copy command  [j/k] Scroll  [C-d/C-u] Page  [q/Esc] Back to│
 └──────────────────────────────────────────────────────────────────────────────┘

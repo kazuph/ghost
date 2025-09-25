@@ -50,17 +50,18 @@ impl Drop for TestEnvironment {
 #[test]
 fn test_command_not_double_wrapped_on_restart() {
     let env = TestEnvironment::new();
+    let conn = storage::init_database_with_config(Some(env.config.clone())).unwrap();
 
     // First spawn with a simple command
     let original_command = vec!["echo".to_string(), "hello world".to_string()];
-    let result = commands::spawn(original_command.clone(), None, vec![]);
+    let result =
+        commands::spawn_with_conn(&conn, original_command.clone(), None, vec![], false, false);
     assert!(result.is_ok());
 
     // Give process time to start
     thread::sleep(Duration::from_millis(500));
 
     // Get the task from database
-    let conn = storage::init_database_with_config(Some(env.config.clone())).unwrap();
     let tasks = storage::get_tasks(&conn, None).unwrap();
     assert_eq!(tasks.len(), 1);
 
@@ -72,12 +73,18 @@ fn test_command_not_double_wrapped_on_restart() {
     assert_eq!(stored_command, original_command);
 
     // Stop the task
-    let _ = commands::stop(&task_id, true, false);
+    let _ = commands::stop_with_conn(&conn, &task_id, true, false);
     thread::sleep(Duration::from_millis(200));
 
     // Restart by spawning with the stored command
-    let restart_result =
-        commands::spawn(stored_command, task.cwd.clone().map(|c| c.into()), vec![]);
+    let restart_result = commands::spawn_with_conn(
+        &conn,
+        stored_command,
+        task.cwd.clone().map(|c| c.into()),
+        vec![],
+        false,
+        false,
+    );
     assert!(restart_result.is_ok());
 
     // Give new process time to start
@@ -97,12 +104,13 @@ fn test_command_not_double_wrapped_on_restart() {
     assert_eq!(new_stored_command, original_command);
 
     // Clean up
-    let _ = commands::stop(&new_task.id, true, false);
+    let _ = commands::stop_with_conn(&conn, &new_task.id, true, false);
 }
 
 #[test]
 fn test_complex_command_preserved() {
     let env = TestEnvironment::new();
+    let conn = storage::init_database_with_config(Some(env.config.clone())).unwrap();
 
     // Complex command with arguments and flags
     let complex_command = vec![
@@ -112,14 +120,14 @@ fn test_complex_command_preserved() {
         "presentation.md".to_string(),
     ];
 
-    let result = commands::spawn(complex_command.clone(), None, vec![]);
+    let result =
+        commands::spawn_with_conn(&conn, complex_command.clone(), None, vec![], false, false);
     assert!(result.is_ok());
 
     // Give process time to start
     thread::sleep(Duration::from_millis(500));
 
     // Verify command in database
-    let conn = storage::init_database_with_config(Some(env.config.clone())).unwrap();
     let tasks = storage::get_tasks(&conn, None).unwrap();
     assert_eq!(tasks.len(), 1);
 
@@ -127,12 +135,13 @@ fn test_complex_command_preserved() {
     assert_eq!(stored_command, complex_command);
 
     // Clean up
-    let _ = commands::stop(&tasks[0].id, true, false);
+    let _ = commands::stop_with_conn(&conn, &tasks[0].id, true, false);
 }
 
 #[test]
 fn test_process_start_verification() {
     let env = TestEnvironment::new();
+    let conn = storage::init_database_with_config(Some(env.config.clone())).unwrap();
 
     // Try to spawn a command that exits immediately with non-interactive shell
     let failing_command = vec![
@@ -141,13 +150,12 @@ fn test_process_start_verification() {
 
     // Even though the shell starts, the command should be marked as failed
     // because our verification should detect the quick exit
-    let _result = commands::spawn(failing_command, None, vec![]);
+    let _result = commands::spawn_with_conn(&conn, failing_command, None, vec![], false, false);
 
     // Give time for process verification
     thread::sleep(Duration::from_millis(500));
 
     // Check the database for task status
-    let conn = storage::init_database_with_config(Some(env.config.clone())).unwrap();
     let tasks = storage::get_tasks(&conn, None).unwrap();
 
     // We should have at least one task
@@ -173,6 +181,7 @@ fn test_working_directory_preserved_on_restart() {
     let env = TestEnvironment::new();
     let test_dir = TempDir::new().unwrap();
     let test_path = test_dir.path().to_path_buf();
+    let conn = storage::init_database_with_config(Some(env.config.clone())).unwrap();
 
     // Create a test script that prints working directory
     let script_path = test_path.join("print_pwd.sh");
@@ -188,13 +197,19 @@ fn test_working_directory_preserved_on_restart() {
 
     // Spawn with specific working directory
     let command = vec![script_path.to_string_lossy().to_string()];
-    let result = commands::spawn(command.clone(), Some(test_path.clone()), vec![]);
+    let result = commands::spawn_with_conn(
+        &conn,
+        command.clone(),
+        Some(test_path.clone()),
+        vec![],
+        false,
+        false,
+    );
     assert!(result.is_ok());
 
     thread::sleep(Duration::from_millis(500));
 
     // Get task and verify working directory
-    let conn = storage::init_database_with_config(Some(env.config.clone())).unwrap();
     let tasks = storage::get_tasks(&conn, None).unwrap();
     assert_eq!(tasks.len(), 1);
 
@@ -202,11 +217,18 @@ fn test_working_directory_preserved_on_restart() {
     assert_eq!(task.cwd, Some(test_path.to_string_lossy().to_string()));
 
     // Stop and restart
-    let _ = commands::stop(&task.id, true, false);
+    let _ = commands::stop_with_conn(&conn, &task.id, true, false);
     thread::sleep(Duration::from_millis(200));
 
     // Restart with same working directory
-    let restart_result = commands::spawn(command, task.cwd.clone().map(|c| c.into()), vec![]);
+    let restart_result = commands::spawn_with_conn(
+        &conn,
+        command,
+        task.cwd.clone().map(|c| c.into()),
+        vec![],
+        false,
+        false,
+    );
     assert!(restart_result.is_ok());
 
     thread::sleep(Duration::from_millis(500));

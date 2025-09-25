@@ -118,7 +118,7 @@ impl ServerHandler for GhostServerHandler {
                 let env = t.env.unwrap_or_default();
 
                 let conn = self.conn.lock().unwrap();
-                let process_info = commands::spawn_with_conn(&conn, command, cwd, env, false)
+                let process_info = commands::spawn_with_conn(&conn, command, cwd, env, false, true)
                     .map_err(|e| CallToolError::from_message(format!("Failed to run: {e}")))?;
 
                 // Get the task from database to return complete info
@@ -136,9 +136,10 @@ impl ServerHandler for GhostServerHandler {
                 let conn = self.conn.lock().unwrap();
 
                 // Prepare status filter
-                let tasks = commands::list_with_conn(&conn, t.status, true, false).map_err(|e| {
-                    CallToolError::from_message(format!("Failed to list tasks: {e}"))
-                })?;
+                let tasks =
+                    commands::list_with_conn(&conn, t.status, true, false).map_err(|e| {
+                        CallToolError::from_message(format!("Failed to list tasks: {e}"))
+                    })?;
 
                 let result = serde_json::to_string_pretty(&tasks)
                     .map_err(|e| CallToolError::from_message(format!("JSON error: {e}")))?;

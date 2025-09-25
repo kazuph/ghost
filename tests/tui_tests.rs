@@ -210,9 +210,9 @@ fn test_task_list_selection() {
 
     // Check that the output contains the tasks with truncated IDs due to column width
     // The selection highlighting will be tested once we have the expected file
-    assert!(buffer_output.contains("abc123"));
-    assert!(buffer_output.contains("def678"));
-    assert!(buffer_output.contains("ghi111"));
+    assert!(buffer_output.contains("abc1"));
+    assert!(buffer_output.contains("def6"));
+    assert!(buffer_output.contains("ghi1"));
 }
 
 #[test]
@@ -304,9 +304,11 @@ fn test_footer_contains_keybinds() {
 
     // Check that footer contains essential keybinds
     assert!(buffer_output.contains("j/k:Move"));
-    assert!(buffer_output.contains("l:Log"));
-    assert!(buffer_output.contains("s/C-k:Stop"));
-    assert!(buffer_output.contains("q:Quit"));
+    assert!(buffer_output.contains("Enter:Log"));
+    assert!(buffer_output.contains("d:Details"));
+    assert!(buffer_output.contains("o:Open"));
+    assert!(buffer_output.contains("r:Restart"));
+    assert!(buffer_output.contains("R:Rerun"));
     assert!(buffer_output.contains("g/G:Top/Bot"));
 }
 
@@ -336,14 +338,15 @@ fn test_task_list_vertical_layout() {
     // Content block should contain title and table
     assert!(lines[0].starts_with("┌")); // Content top border
     assert!(lines[0].contains("Ghost v"));
+    assert!(lines[1].contains("Star"));
     assert!(lines[1].contains("ID"));
     assert!(lines[1].contains("PID"));
-    assert!(lines[1].contains("Status"));
+    assert!(lines[1].contains("Statu"));
 
     // Footer block should be separate
     assert!(lines[lines.len() - 3].starts_with("├")); // Footer top border
     assert!(lines[lines.len() - 2].contains("j/k:Move"));
-    assert!(lines[lines.len() - 2].contains("l:Log"));
+    assert!(lines[lines.len() - 2].contains("Enter:Log"));
     assert!(lines[lines.len() - 1].starts_with("└")); // Footer bottom border
 }
 
@@ -537,25 +540,25 @@ fn test_task_filter_cycling_with_tab() {
     app.tasks = tasks;
     app.table_scroll.set_total_items(3);
 
-    // Test initial filter is All
-    assert_eq!(app.filter, TaskFilter::All);
-
-    // Press Tab to cycle to Running
-    let key_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-    app.handle_key(key_tab).unwrap();
-    assert_eq!(app.filter, TaskFilter::Running);
+    // Test initial filter is Running by default
+    assert_eq!(TaskFilter::Running, app.filter);
 
     // Press Tab to cycle to Exited
+    let key_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
     app.handle_key(key_tab).unwrap();
-    assert_eq!(app.filter, TaskFilter::Exited);
+    assert_eq!(TaskFilter::Exited, app.filter);
 
     // Press Tab to cycle to Killed
     app.handle_key(key_tab).unwrap();
-    assert_eq!(app.filter, TaskFilter::Killed);
+    assert_eq!(TaskFilter::Killed, app.filter);
 
-    // Press Tab to cycle back to All
+    // Press Tab to cycle to All
     app.handle_key(key_tab).unwrap();
-    assert_eq!(app.filter, TaskFilter::All);
+    assert_eq!(TaskFilter::All, app.filter);
+
+    // Press Tab to cycle back to Running
+    app.handle_key(key_tab).unwrap();
+    assert_eq!(TaskFilter::Running, app.filter);
 }
 
 #[test]
@@ -586,9 +589,9 @@ fn test_process_details_navigation() {
     // Initial view should be TaskList
     assert_eq!(app.view_mode, ViewMode::TaskList);
 
-    // Press Enter to view process details
-    let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    app.handle_key(key_enter).unwrap();
+    // Press d to view process details
+    let key_details = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    app.handle_key(key_details).unwrap();
     assert_eq!(app.view_mode, ViewMode::ProcessDetails);
     assert_eq!(
         app.selected_task_id,
@@ -602,12 +605,18 @@ fn test_process_details_navigation() {
     assert!(!app.should_quit());
 
     // Go back to process details and test q key
-    app.handle_key(key_enter).unwrap();
+    app.handle_key(key_details).unwrap();
     assert_eq!(app.view_mode, ViewMode::ProcessDetails);
 
-    // Press q to quit
+    // Press q to return to task list without quitting
     let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
     app.handle_key(key_q).unwrap();
+    assert_eq!(app.view_mode, ViewMode::TaskList);
+    assert!(!app.should_quit());
+
+    // Ctrl+C should signal quit from task list
+    let key_ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    app.handle_key(key_ctrl_c).unwrap();
     assert!(app.should_quit());
 }
 
@@ -801,8 +810,8 @@ fn test_integrated_navigation_flow() {
     assert_eq!(app.selected_index(), 1);
 
     // View process details of second task
-    let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    app.handle_key(key_enter).unwrap();
+    let key_details = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    app.handle_key(key_details).unwrap();
     assert_eq!(app.view_mode, ViewMode::ProcessDetails);
     assert_eq!(app.selected_task_id, Some("task-2".to_string()));
 
@@ -817,13 +826,13 @@ fn test_integrated_navigation_flow() {
     assert_eq!(app.selected_index(), 0);
 
     // View logs of first task
-    let key_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE);
-    app.handle_key(key_l).unwrap();
+    let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    app.handle_key(key_enter).unwrap();
     assert_eq!(app.view_mode, ViewMode::LogView);
 
     // Go back and view process details
     app.handle_key(key_esc).unwrap();
-    app.handle_key(key_enter).unwrap();
+    app.handle_key(key_details).unwrap();
     assert_eq!(app.view_mode, ViewMode::ProcessDetails);
     assert_eq!(app.selected_task_id, Some("task-1".to_string()));
 
@@ -831,7 +840,7 @@ fn test_integrated_navigation_flow() {
     app.handle_key(key_esc).unwrap();
     let key_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
     app.handle_key(key_tab).unwrap();
-    assert_eq!(app.filter, TaskFilter::Running);
+    assert_eq!(app.filter, TaskFilter::Exited);
 
     // Quit from task list
     let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);

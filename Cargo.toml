@@ -2,7 +2,7 @@
 name = "ghost"
 version = "0.2.0"
 authors = ["skanehira"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.48", features = ["derive"] }

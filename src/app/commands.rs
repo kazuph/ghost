@@ -37,7 +37,7 @@ fn wrap_with_user_shell(command: Vec<String>) -> Vec<String> {
 /// Run a command in the background (classic wrapper that manages its own connection)
 pub fn spawn(command: Vec<String>, cwd: Option<PathBuf>, env: Vec<String>) -> Result<()> {
     let conn = storage::init_database()?;
-    spawn_with_conn(&conn, command, cwd, env, true).map(|_| ())
+    spawn_with_conn(&conn, command, cwd, env, true, false).map(|_| ())
 }
 
 /// Run a command in the background using a shared database connection.
@@ -47,6 +47,7 @@ pub fn spawn_with_conn(
     cwd: Option<PathBuf>,
     env: Vec<String>,
     show_output: bool,
+    verify_start: bool,
 ) -> Result<process::ProcessInfo> {
     if command.is_empty() {
         return Err(error::GhostError::InvalidArgument {
@@ -66,32 +67,24 @@ pub fn spawn_with_conn(
         conn,
     )?;
 
-    // Verify process actually started
-    let process_started =
-        helpers::wait_for_process_start(process_info.pid, std::time::Duration::from_secs(2))?;
-
-    if !process_started {
-        // Update status to exited if process failed to start
-        storage::update_task_status(
-            conn,
-            &process_info.id,
-            storage::TaskStatus::Exited,
-            Some(1),
-        )?;
-        return Err(error::GhostError::ProcessSpawn {
-            message: "Process exited immediately after starting".to_string(),
-        });
+    if verify_start {
+        ensure_process_started(conn, &process_info)?;
     }
 
     if show_output {
         display::print_process_started(&process_info.id, process_info.pid, &process_info.log_path);
     }
 
-    // Spawn a blocking task to wait for the child process to prevent zombies without
-    // blocking async runtime executor threads.
-    tokio::task::spawn_blocking(move || {
-        let _ = child.wait();
-    });
+    // Spawn a background waiter to avoid zombies. Prefer Tokio if a runtime is active.
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(move || {
+            let _ = child.wait();
+        });
+    } else {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 
     Ok(process_info)
 }
@@ -143,9 +136,30 @@ pub fn spawn_with_shell_wrapper(
     cwd: Option<PathBuf>,
     env_vars: Vec<(String, String)>,
     conn: &Connection,
+    verify_start: bool,
 ) -> Result<(process::ProcessInfo, std::process::Child)> {
     let execution_command = wrap_with_user_shell(original_command.clone());
-    spawn_and_register_process(original_command, execution_command, cwd, env_vars, conn)
+    let (process_info, child) =
+        spawn_and_register_process(original_command, execution_command, cwd, env_vars, conn)?;
+
+    if verify_start {
+        ensure_process_started(conn, &process_info)?;
+    }
+
+    Ok((process_info, child))
+}
+
+fn ensure_process_started(conn: &Connection, process_info: &process::ProcessInfo) -> Result<()> {
+    let process_started =
+        helpers::wait_for_process_start(process_info.pid, std::time::Duration::from_secs(2))?;
+
+    if !process_started {
+        storage::update_task_status(conn, &process_info.id, storage::TaskStatus::Exited, Some(1))?;
+        return Err(error::GhostError::ProcessSpawn {
+            message: "Process exited immediately after starting".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// List all background processes (classic wrapper that manages its own connection)
@@ -171,13 +185,7 @@ pub fn list_with_conn(
 }
 
 /// Show logs for a process
-pub async fn log(
-    task_id: &str,
-    follow: bool,
-    all: bool,
-    head: usize,
-    tail: usize,
-) -> Result<()> {
+pub async fn log(task_id: &str, follow: bool, all: bool, head: usize, tail: usize) -> Result<()> {
     let conn = storage::init_database()?;
     log_with_conn(&conn, task_id, follow, all, head, tail, true)
         .await
@@ -223,7 +231,10 @@ pub async fn log_with_conn(
                 buffer.push('\n');
             }
             if total_lines > head + tail {
-                buffer.push_str(&format!("\n... {} lines omitted ...\n\n", total_lines - head - tail));
+                buffer.push_str(&format!(
+                    "\n... {} lines omitted ...\n\n",
+                    total_lines - head - tail
+                ));
             }
             for line in lines.iter().skip(total_lines.saturating_sub(tail)) {
                 buffer.push_str(line);
@@ -330,7 +341,7 @@ pub fn restart(task_id: &str, force: bool) -> Result<()> {
 
     // Start the task again with original working directory and environment
     println!("Starting task {task_id}...");
-    match spawn_with_conn(&conn, command, cwd, env, true) {
+    match spawn_with_conn(&conn, command, cwd, env, true, true) {
         Ok(_) => {
             let action = if is_running { "restarted" } else { "rerun" };
             println!("Task {task_id} has been {action} successfully");
@@ -367,12 +378,7 @@ pub fn status_with_conn(
 }
 
 /// Clean up old finished tasks
-pub fn cleanup(
-    days: u64,
-    status: Option<String>,
-    dry_run: bool,
-    all: bool,
-) -> Result<()> {
+pub fn cleanup(days: u64, status: Option<String>, dry_run: bool, all: bool) -> Result<()> {
     let conn = storage::init_database()?;
     cleanup_with_conn(&conn, days, status, dry_run, all)
 }
@@ -491,12 +497,12 @@ pub async fn tui(day_window: Option<u64>) -> Result<()> {
     use crossterm::{
         event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream},
         execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     };
     use futures::StreamExt;
-    use ratatui::{backend::CrosstermBackend, Terminal};
+    use ratatui::{Terminal, backend::CrosstermBackend};
     use std::io;
-    use tokio::time::{interval, Duration};
+    use tokio::time::{Duration, interval};
 
     use crate::app::tui::app::TuiApp;
 
