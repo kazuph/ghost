@@ -1,5 +1,5 @@
 use crate::app::helpers::extract_port_from_process;
-use crate::app::storage::{task_status::TaskStatus, Task};
+use crate::app::storage::{Task, task_status::TaskStatus};
 
 /// Display a list of tasks in a formatted table
 pub fn print_task_list(tasks: &[Task]) {

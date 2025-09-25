@@ -1,12 +1,12 @@
-┌ Ghost v0.0.1 [Filter: All] ─────────────────────────────────────────────┐
-│ ID      PID     Status  Starte  Command              Directory          │
+┌ Ghost v0.2.0 [Filter: All] ─────────────────────────────────────────────┐
+│ Star  ID    PID   Statu  Dura  Port  Dire  Command                      │
 │                                                                         │
-│                                                                         │
+│      No ta                                                              │
 │                                                                         │
 │                                                                         │
 │                                                                         │
 │                                                                         │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ j/k:Move  g/G:Top/Bot  Enter:Log  d:Details  s/C-k:Stop  /:Search  C-g:G│
+│ j/k:Move  g/G:Top/Bot  Enter:Log  d:Details  o:Open  r:Restart  R:Rerun │
 └─────────────────────────────────────────────────────────────────────────┘

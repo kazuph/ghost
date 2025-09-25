@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use rusqlite::{Connection, Result as SqliteResult, Row};
 use chrono;
+use rusqlite::{Connection, Result as SqliteResult, Row};
 
 use super::task::Task;
 use super::task_status::TaskStatus;
@@ -65,7 +65,11 @@ pub fn get_task(conn: &Connection, task_id: &str) -> Result<Task> {
 }
 
 /// Get all tasks, optionally filtered by status
-pub fn get_tasks(conn: &Connection, status_filter: Option<&str>, show_all: bool) -> Result<Vec<Task>> {
+pub fn get_tasks(
+    conn: &Connection,
+    status_filter: Option<&str>,
+    show_all: bool,
+) -> Result<Vec<Task>> {
     let base_sql = "SELECT id, pid, pgid, command, env, cwd, status, exit_code, started_at, finished_at, log_path FROM tasks";
     let order_clause = " ORDER BY started_at DESC";
 
@@ -78,8 +82,14 @@ pub fn get_tasks(conn: &Connection, status_filter: Option<&str>, show_all: bool)
             .timestamp();
 
         match status_filter {
-            Some(_) => (format!("{base_sql} WHERE status = ?1 AND started_at >= {since_24h}{order_clause}"), true),
-            None => (format!("{base_sql} WHERE started_at >= {since_24h}{order_clause}"), false),
+            Some(_) => (
+                format!("{base_sql} WHERE status = ?1 AND started_at >= {since_24h}{order_clause}"),
+                true,
+            ),
+            None => (
+                format!("{base_sql} WHERE started_at >= {since_24h}{order_clause}"),
+                false,
+            ),
         }
     } else {
         // Show all tasks
@@ -179,10 +189,10 @@ pub fn get_tasks_with_process_check_since(
 
     // Update status for running tasks
     for task in &mut tasks {
-        if task.status == TaskStatus::Running {
-            if let Ok(updated_task) = update_task_status_by_process_check(conn, &task.id) {
-                *task = updated_task;
-            }
+        if task.status == TaskStatus::Running
+            && let Ok(updated_task) = update_task_status_by_process_check(conn, &task.id)
+        {
+            *task = updated_task;
         }
     }
 
@@ -214,7 +224,7 @@ pub fn update_task_status(
             task.status = new_status;
             task.finished_at = finished_at;
             task.exit_code = exit_code;
-            
+
             if let Err(e) = crate::app::process_state::write_execution_summary_to_log(&task) {
                 eprintln!("Failed to write execution summary to log: {e}");
             }

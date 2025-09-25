@@ -1,8 +1,8 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Cell, Row, StatefulWidget, Table, TableState, Widget},
-    Frame,
 };
 
 // Layout constants
@@ -22,12 +22,12 @@ const COLUMN_CONSTRAINTS: [Constraint; 8] = [
     Constraint::Length(PID_COLUMN_WIDTH),
     Constraint::Length(STATUS_COLUMN_WIDTH),
     Constraint::Length(DURATION_COLUMN_WIDTH), // Duration column
-    Constraint::Length(PORT_COLUMN_WIDTH), // Port/URL column
+    Constraint::Length(PORT_COLUMN_WIDTH),     // Port/URL column
     Constraint::Length(DIRECTORY_COLUMN_WIDTH), // Directory is fixed width
     Constraint::Min(COMMAND_COLUMN_MIN_WIDTH), // Command takes remaining space
 ];
 
-use super::{table_state_scroll::TableScroll, App, TaskFilter};
+use super::{App, TaskFilter, table_state_scroll::TableScroll};
 use crate::app::storage::task::Task;
 use crate::app::storage::task_status::TaskStatus;
 
@@ -179,7 +179,7 @@ impl<'a> TaskListWidget<'a> {
         result
     }
 
-    fn create_header_row(&self) -> Row {
+    fn create_header_row(&self) -> Row<'_> {
         Row::new(vec![
             Cell::from(" Started"),
             Cell::from(" ID"),
@@ -305,8 +305,7 @@ impl<'a> TaskListWidget<'a> {
                     let directory = self.format_directory(task.cwd.as_deref().unwrap_or("-"));
                     let duration = task.duration_string();
                     let port_info = if task.status == TaskStatus::Running {
-                        self
-                            .port_cache
+                        self.port_cache
                             .get(&task.pid)
                             .cloned()
                             .unwrap_or_else(|| "-".to_string())
@@ -359,12 +358,14 @@ impl<'a> TaskListWidget<'a> {
     fn render_footer_text(&self, x: u16, y: u16, width: u16, buf: &mut ratatui::buffer::Buffer) {
         let keybinds_text = if let Some(ref query) = self.search_query {
             if query.is_empty() {
-                " j/k:Move  g/G:Top/Bot  Enter:Log  d:Details  o:Open  s:Stop  C-k:Kill  /:Search  Tab:Status Filter  q:Quit".to_string()
+                " j/k:Move  g/G:Top/Bot  Enter:Log  d:Details  o:Open  r:Restart  R:Rerun  s:Stop  C-k:Kill  /:Search  Tab:Status Filter  q:Quit".to_string()
             } else {
-                format!(" Search Filter: '{query}' - C-n/p:Move  Enter:Log  Tab:Status Filter  q/Esc:Clear")
+                format!(
+                    " Search Filter: '{query}' - C-n/p:Move  Enter:Log  r:Restart  R:Rerun  Tab:Status Filter  q/Esc:Clear"
+                )
             }
         } else {
-            " j/k:Move  g/G:Top/Bot  Enter:Log  d:Details  o:Open  s:Stop  C-k:Kill  /:Search  Tab:Status Filter  q:Quit".to_string()
+            " j/k:Move  g/G:Top/Bot  Enter:Log  d:Details  o:Open  r:Restart  R:Rerun  s:Stop  C-k:Kill  /:Search  Tab:Status Filter  q:Quit".to_string()
         };
 
         // Draw the text

@@ -14,9 +14,12 @@ Ghost is a simple background process manager for Unix systems (Linux, macOS, BSD
   <img src="./images/logo.png" width=300 />
 </div>
 
+Ghost was inspired by projects like [pueue](https://github.com/Nukesor/pueue) and [task-spooler](https://github.com/justanhduc/task-spooler).
+
 ## Features
 
 ![](./images/ghost.png)
+
 
 - **Background Process Execution**: Run commands in the background without a daemon
 - **TUI Mode**: Interactive terminal UI for managing processes
@@ -29,43 +32,48 @@ Ghost is a simple background process manager for Unix systems (Linux, macOS, BSD
 - **Short ID Support**: Use abbreviated task IDs for convenience
 - **Working Directory Tracking**: See where each command was executed with path shortening
 - **Port Detection**: Automatic web server port detection for running processes
+- **MCP Server Support**: Integrate with AI assistants via Model Context Protocol (`ghost mcp`)
 - **Browser Integration**: One-key browser opening for web servers (o key)
 - **Enhanced TUI Layout**: Optimized column ordering and directory display
 - **No Daemon Required**: Simple one-shot execution model
 
-This tool was inspired by:
-- [pueue](https://github.com/Nukesor/pueue)
-- [task-spooler](https://github.com/justanhduc/task-spooler)
 
-## Installation
-
-### Requirements
+## Requirements
 
 - Unix-based system (Linux, macOS, BSD)
 - Rust 1.80+ (2024 edition)
 
+- `lsof` command (optional, required for listening port detection)
+
+
 ### Build from source
 
-```bash
+```sh
 git clone https://github.com/skanehira/ghost.git
 cd ghost
 cargo build --release
 ```
 
-The binary will be available at `target/release/ghost`.
+The compiled binary is written to `target/release/ghost`.
 
-### Install
+### Download prebuilt binaries
+
+If you prefer not to build from source, download the latest prebuilt binaries from the [GitHub Releases](https://github.com/skanehira/ghost/releases) page.
+
+## Quick Start
 
 ```bash
+
 # Using cargo install (recommended for development)
 cargo install --path .
 
 # Or copy to local bin directory  
 cp target/release/ghost ~/.local/bin/
 
-# Or to system bin (requires sudo)
-sudo cp target/release/ghost /usr/local/bin/
-```
+
+# List managed tasks
+ghost list
+
 
 ### Development Setup
 
@@ -86,6 +94,24 @@ just list                   # Show available commands
 ```
 
 The `just install` command runs `cargo install --path .` which builds in release mode and installs to `~/.cargo/bin/` automatically.
+
+### Optional: Install lsof for port detection
+
+
+
+Listening-port detection relies on the `lsof` command. Install it if your system does not already provide it:
+
+```bash
+# macOS (usually pre-installed)
+brew install lsof           # If missing
+
+# Linux
+sudo apt-get install lsof   # Debian/Ubuntu
+sudo yum install lsof       # RHEL/CentOS
+sudo pacman -S lsof         # Arch Linux
+```
+
+Ghost works without `lsof`, but the TUI will prompt you to install it if port detection is unavailable.
 
 ## Usage
 
@@ -527,12 +553,62 @@ $ ghost run rails server  # Usually runs on port 3000
 - Example: `/Users/john/Projects/my-app/src` → `~/P/m/src`
 - Optimized column layout with Started time moved to first column
 
+### MCP Server Mode
+
+Ghost supports the Model Context Protocol (MCP), allowing it to be used as an MCP server for AI assistants like Claude.
+
+#### Starting the MCP Server
+
+```bash
+
+ghost mcp
+
+# Open the TUI dashboard
+ghost
+```
+
+## Documentation
+
+
+#### Available MCP Tools
+
+- **ghost_run**: Run a command as a background process
+  - Parameters: command, args, cwd, env
+- **ghost_list**: List all managed processes
+  - Parameters: status (filter), running (boolean)
+- **ghost_stop**: Stop a running process
+  - Parameters: id
+- **ghost_log**: Get logs for a process
+  - Parameters: id
+
+#### Configuration for Claude Desktop
+
+Add to your Claude Desktop configuration:
+
+```json
+{
+  "mcpServers": {
+    "ghost": {
+      "command": "/path/to/ghost",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Once configured, you can use natural language to interact with ghost through Claude:
+- "Use ghost to run a web server on port 8080"
+- "List all running processes managed by ghost"
+- "Stop the process with ID abc123"
+- "Show me the logs for process xyz789"
+
 ### Key Features
 
 - **No Daemon Required**: Each command is self-contained
 - **Process Isolation**: Tasks run as independent processes
 - **Log Persistence**: All output is captured and stored
 - **Status Monitoring**: Real-time status updates via process checking
+- **MCP Integration**: Control ghost through AI assistants
 - **Cross-Platform**: Works on Unix-like systems (Linux, macOS)
 
 ### Configuration
@@ -569,3 +645,4 @@ Ghost uses a simple, daemon-free architecture:
 - **Async Runtime**: Tokio
 - **Process Management**: Unix signals (SIGTERM/SIGKILL)
 - **Platform Support**: Unix-only (uses `nix` crate for system calls)
+

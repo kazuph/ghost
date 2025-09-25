@@ -1,19 +1,22 @@
 ┌ Process Details ─────────────────────────────────────────────────────────────┐
-│Task ID: abc12345-6789-1234-5678-123456789abc                                 │
-│Command: npm run dev                                                          │
+│Task ID: listening-task                                                       │
+│Command: node server.js                                                       │
+│Status: running (13286h 37m 4s)                                               │
 │PID: 12345 | PGID: 12345                                                      │
-│Started: 2024-01-01 11:40:00                                                  │
-│Directory: /home/user/projects/myapp                                          │
+│Directory: /home/user/projects/server                                         │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ Listening Ports ─────────────────────────────────────────────────────────────┐
-│Not listening on any ports                                                    │
-│                                                                              │
+│tcp     127.0.0.1:8080     LISTEN                                            │
+│tcp     *:3000             LISTEN                                            │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ Environment Variables ───────────────────────────────────────────────────────┐
-│NODE_ENV=development                                                          │
-│PORT=3000                                                                     │
-│DATABASE_URL=postgresql://localhost:5432/mydb                                 │
+│NODE_ENV=production                                                           │
+│PORT=8080                                                                     │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│[l] View logs  [c] Copy command  [j/k] Scroll  [C-d/C-u] Page  [q/Esc] Back to│
+│          [q] Quit  [Esc] Back to list  [j/k] Scroll  [C-d/C-u] Page          │
 └──────────────────────────────────────────────────────────────────────────────┘

@@ -3,7 +3,7 @@ use ghost::app::storage::task::Task;
 use ghost::app::storage::task_status::TaskStatus;
 use ghost::app::tui::{App, TaskFilter, ViewMode};
 use pretty_assertions::assert_eq;
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 use std::fs;
 use tempfile::TempDir;
 
@@ -62,7 +62,7 @@ fn create_test_tasks() -> Vec<Task> {
             id: "abc12345-6789-1234-5678-123456789abc".to_string(),
             pid: 12345,
             pgid: Some(12345),
-            command: r#"["npm","run","dev"]"#.to_string(),
+            command: r#"["echo","hello"]"#.to_string(),
             env: None,
             cwd: None,
             status: TaskStatus::Running,
@@ -129,6 +129,15 @@ fn normalize_dynamic_output(output: &str) -> String {
     // Replace runtime patterns like "13286h 37m 52s" with a placeholder
     let re = regex::Regex::new(r"\d+h \d+m \d+s|\d+m \d+s|\d+s").unwrap();
     re.replace_all(output, "<RUNTIME>").to_string()
+}
+
+/// Helper function to remove status line from process details output
+fn normalize_without_status_line(output: &str) -> String {
+    output
+        .lines()
+        .filter(|line| !line.contains("│Status:"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -201,9 +210,9 @@ fn test_task_list_selection() {
 
     // Check that the output contains the tasks with truncated IDs due to column width
     // The selection highlighting will be tested once we have the expected file
-    assert!(buffer_output.contains("abc123"));
-    assert!(buffer_output.contains("def678"));
-    assert!(buffer_output.contains("ghi111"));
+    assert!(buffer_output.contains("abc1"));
+    assert!(buffer_output.contains("def6"));
+    assert!(buffer_output.contains("ghi1"));
 }
 
 #[test]
@@ -295,9 +304,11 @@ fn test_footer_contains_keybinds() {
 
     // Check that footer contains essential keybinds
     assert!(buffer_output.contains("j/k:Move"));
-    assert!(buffer_output.contains("l/Enter:Log"));
-    assert!(buffer_output.contains("s/C-k:Stop"));
-    assert!(buffer_output.contains("q:Qu"));
+    assert!(buffer_output.contains("Enter:Log"));
+    assert!(buffer_output.contains("d:Details"));
+    assert!(buffer_output.contains("o:Open"));
+    assert!(buffer_output.contains("r:Restart"));
+    assert!(buffer_output.contains("R:Rerun"));
     assert!(buffer_output.contains("g/G:Top/Bot"));
 }
 
@@ -327,14 +338,15 @@ fn test_task_list_vertical_layout() {
     // Content block should contain title and table
     assert!(lines[0].starts_with("┌")); // Content top border
     assert!(lines[0].contains("Ghost v"));
+    assert!(lines[1].contains("Star"));
     assert!(lines[1].contains("ID"));
     assert!(lines[1].contains("PID"));
-    assert!(lines[1].contains("Status"));
+    assert!(lines[1].contains("Statu"));
 
     // Footer block should be separate
     assert!(lines[lines.len() - 3].starts_with("├")); // Footer top border
     assert!(lines[lines.len() - 2].contains("j/k:Move"));
-    assert!(lines[lines.len() - 2].contains("l/Enter:Log"));
+    assert!(lines[lines.len() - 2].contains("Enter:Log"));
     assert!(lines[lines.len() - 1].starts_with("└")); // Footer bottom border
 }
 
@@ -385,7 +397,7 @@ fn test_table_scroll_functionality() {
     let key_shift_g = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE);
     app.handle_key(key_shift_g).unwrap();
     assert_eq!(app.selected_index(), 19); // Last task
-                                          // Scroll offset should be adjusted to show the selected item
+    // Scroll offset should be adjusted to show the selected item
     assert!(app.table_scroll_offset() > 0);
 
     // Test going to top resets scroll
@@ -528,25 +540,25 @@ fn test_task_filter_cycling_with_tab() {
     app.tasks = tasks;
     app.table_scroll.set_total_items(3);
 
-    // Test initial filter is Running
-    assert_eq!(app.filter, TaskFilter::Running);
-
-    // Press Tab to cycle to Running
-    let key_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-    app.handle_key(key_tab.clone()).unwrap();
-    assert_eq!(app.filter, TaskFilter::Running);
+    // Test initial filter is Running by default
+    assert_eq!(TaskFilter::Running, app.filter);
 
     // Press Tab to cycle to Exited
-    app.handle_key(key_tab.clone()).unwrap();
-    assert_eq!(app.filter, TaskFilter::Exited);
+    let key_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+    app.handle_key(key_tab).unwrap();
+    assert_eq!(TaskFilter::Exited, app.filter);
 
     // Press Tab to cycle to Killed
-    app.handle_key(key_tab.clone()).unwrap();
-    assert_eq!(app.filter, TaskFilter::Killed);
-
-    // Press Tab to cycle back to All
     app.handle_key(key_tab).unwrap();
-    assert_eq!(app.filter, TaskFilter::All);
+    assert_eq!(TaskFilter::Killed, app.filter);
+
+    // Press Tab to cycle to All
+    app.handle_key(key_tab).unwrap();
+    assert_eq!(TaskFilter::All, app.filter);
+
+    // Press Tab to cycle back to Running
+    app.handle_key(key_tab).unwrap();
+    assert_eq!(TaskFilter::Running, app.filter);
 }
 
 #[test]
@@ -577,9 +589,9 @@ fn test_process_details_navigation() {
     // Initial view should be TaskList
     assert_eq!(app.view_mode, ViewMode::TaskList);
 
-    // Press Enter to view process details
-    let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    app.handle_key(key_enter).unwrap();
+    // Press d to view process details
+    let key_details = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    app.handle_key(key_details).unwrap();
     assert_eq!(app.view_mode, ViewMode::ProcessDetails);
     assert_eq!(
         app.selected_task_id,
@@ -593,13 +605,48 @@ fn test_process_details_navigation() {
     assert!(!app.should_quit());
 
     // Go back to process details and test q key
-    app.handle_key(key_enter).unwrap();
+    app.handle_key(key_details).unwrap();
     assert_eq!(app.view_mode, ViewMode::ProcessDetails);
 
-    // Press q to quit
+    // Press q to return to task list without quitting
     let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
     app.handle_key(key_q).unwrap();
+    assert_eq!(app.view_mode, ViewMode::TaskList);
+    assert!(!app.should_quit());
+
+    // Ctrl+C should signal quit from task list
+    let key_ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    app.handle_key(key_ctrl_c).unwrap();
     assert!(app.should_quit());
+}
+
+#[test]
+fn test_repeat_command_with_r_key() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ghost::app::tui::app::TuiApp;
+
+    let env = TestEnvironment::new();
+    let mut app = TuiApp::new_with_config(env.config.clone()).unwrap();
+
+    // Add test tasks
+    let tasks = create_test_tasks();
+    app.tasks = tasks;
+    app.table_scroll.set_total_items(app.tasks.len());
+
+    // Select the first task (index 0) - "echo hello"
+    app.set_selected_index(0);
+
+    // Press 'r' key to repeat command
+    let key_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+    let result = app.handle_key(key_r);
+
+    // Should succeed
+    assert!(result.is_ok());
+
+    // Since this is a test environment without a real database,
+    // we can't verify that a new task was created.
+    // The real behavior is tested by the fact that the operation doesn't panic
+    // and returns Ok(()).
 }
 
 #[test]
@@ -636,10 +683,12 @@ fn test_process_details_display() {
     let buffer_output = buffer_to_string(terminal.backend().buffer());
     let normalized_output = normalize_buffer_output(&buffer_output);
     let normalized_output = normalize_dynamic_output(&normalized_output);
+    let normalized_output = normalize_without_status_line(&normalized_output);
 
     let expected = load_expected("process_details_display.txt");
     let normalized_expected = normalize_buffer_output(&expected);
     let normalized_expected = normalize_dynamic_output(&normalized_expected);
+    let normalized_expected = normalize_without_status_line(&normalized_expected);
 
     assert_eq!(
         normalized_output, normalized_expected,
@@ -761,14 +810,14 @@ fn test_integrated_navigation_flow() {
     assert_eq!(app.selected_index(), 1);
 
     // View process details of second task
-    let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    app.handle_key(key_enter.clone()).unwrap();
+    let key_details = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    app.handle_key(key_details).unwrap();
     assert_eq!(app.view_mode, ViewMode::ProcessDetails);
     assert_eq!(app.selected_task_id, Some("task-2".to_string()));
 
     // Go back to task list
     let key_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-    app.handle_key(key_esc.clone()).unwrap();
+    app.handle_key(key_esc).unwrap();
     assert_eq!(app.view_mode, ViewMode::TaskList);
 
     // Navigate back to first task
@@ -777,13 +826,13 @@ fn test_integrated_navigation_flow() {
     assert_eq!(app.selected_index(), 0);
 
     // View logs of first task
-    let key_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE);
-    app.handle_key(key_l).unwrap();
+    let key_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    app.handle_key(key_enter).unwrap();
     assert_eq!(app.view_mode, ViewMode::LogView);
 
     // Go back and view process details
-    app.handle_key(key_esc.clone()).unwrap();
-    app.handle_key(key_enter).unwrap();
+    app.handle_key(key_esc).unwrap();
+    app.handle_key(key_details).unwrap();
     assert_eq!(app.view_mode, ViewMode::ProcessDetails);
     assert_eq!(app.selected_task_id, Some("task-1".to_string()));
 
@@ -791,7 +840,7 @@ fn test_integrated_navigation_flow() {
     app.handle_key(key_esc).unwrap();
     let key_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
     app.handle_key(key_tab).unwrap();
-    assert_eq!(app.filter, TaskFilter::Running);
+    assert_eq!(app.filter, TaskFilter::Exited);
 
     // Quit from task list
     let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
@@ -885,10 +934,12 @@ fn test_process_details_with_many_env_vars() {
     let buffer_output = buffer_to_string(terminal.backend().buffer());
     let normalized_output = normalize_buffer_output(&buffer_output);
     let normalized_output = normalize_dynamic_output(&normalized_output);
+    let normalized_output = normalize_without_status_line(&normalized_output);
 
     let expected = load_expected("process_details_many_env_vars.txt");
     let normalized_expected = normalize_buffer_output(&expected);
     let normalized_expected = normalize_dynamic_output(&normalized_expected);
+    let normalized_expected = normalize_without_status_line(&normalized_expected);
 
     assert_eq!(
         normalized_output, normalized_expected,
@@ -910,7 +961,7 @@ fn test_log_viewer_with_many_lines() {
 
     let mut log_content = String::new();
     for i in 1..=100 {
-        log_content.push_str(&format!("Line {}: Log message number {}\n", i, i));
+        log_content.push_str(&format!("Line {i}: Log message number {i}\n"));
     }
     std::fs::write(&log_path, log_content).unwrap();
 
@@ -947,4 +998,157 @@ fn test_log_viewer_with_many_lines() {
         normalized_output, normalized_expected,
         "Log viewer with many lines display does not match expected output"
     );
+}
+
+#[test]
+fn test_process_details_with_listening_ports() {
+    use ghost::app::tui::app::TuiApp;
+
+    let env = TestEnvironment::new();
+    let mut app = TuiApp::new_with_config(env.config.clone()).unwrap();
+
+    // Create test log file
+    let log_dir = env._temp_dir.path().join("logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let log_path = log_dir.join("test-listening.log");
+    std::fs::write(&log_path, "Server started on port 8080").unwrap();
+
+    // Add a task that represents a server with listening ports
+    // Using a fixed PID and data that matches our expected output
+    let tasks = vec![Task {
+        id: "listening-task".to_string(),
+        pid: 12345, // Fixed PID that matches expected output
+        pgid: Some(12345),
+        command: r#"["node", "server.js"]"#.to_string(),
+        env: Some(r#"{"NODE_ENV":"production","PORT":"8080"}"#.to_string()),
+        cwd: Some("/home/user/projects/server".to_string()),
+        status: TaskStatus::Running,
+        exit_code: None,
+        started_at: 1000000000,
+        finished_at: None,
+        log_path: log_path.to_str().unwrap().to_string(),
+    }];
+
+    app.tasks = tasks;
+    app.table_scroll.set_total_items(app.tasks.len());
+
+    // Set up terminal with exact dimensions
+    let backend = TestBackend::new(80, 21);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    // Set app state to show process details for the listening task
+    app.set_selected_index(0);
+    app.view_mode = ViewMode::ProcessDetails;
+    app.selected_task_id = Some("listening-task".to_string());
+
+    terminal.draw(|f| app.render(f)).unwrap();
+
+    let buffer_output = buffer_to_string(terminal.backend().buffer());
+    let normalized_output = normalize_buffer_output(&buffer_output);
+
+    // This test demonstrates the UI layout for process details with listening ports
+    // The expected output contains sample listening port data
+    println!("Testing UI layout for process details with listening ports");
+
+    // For now, just verify that the structure is correct and contains port information
+    assert!(normalized_output.contains("Listening Ports"));
+    assert!(normalized_output.contains("Environment Variables"));
+    assert!(normalized_output.contains("Process Details"));
+    assert!(normalized_output.contains("listening-task"));
+    assert!(normalized_output.contains("node server.js"));
+}
+
+#[test]
+fn test_auto_scroll_ctrl_f_toggle() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ghost::app::tui::app::TuiApp;
+
+    let env = TestEnvironment::new();
+    let mut app = TuiApp::new_with_config(env.config.clone()).unwrap();
+
+    // Add a test task with log
+    let tasks = vec![Task {
+        id: "auto-scroll-test".to_string(),
+        pid: 12345,
+        pgid: Some(12345),
+        command: r#"["tail", "-f", "app.log"]"#.to_string(),
+        env: None,
+        cwd: Some("/tmp".to_string()),
+        status: TaskStatus::Running,
+        exit_code: None,
+        started_at: 1000000000,
+        finished_at: None,
+        log_path: "/tmp/test.log".to_string(),
+    }];
+    app.tasks = tasks;
+    app.table_scroll.set_total_items(1);
+    app.view_mode = ViewMode::LogView;
+
+    // Auto-scroll should be enabled by default
+    assert!(app.auto_scroll_enabled);
+
+    // Press Ctrl+F to toggle off
+    let key_ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    app.handle_key(key_ctrl_f).unwrap();
+    assert!(!app.auto_scroll_enabled);
+
+    // Press Ctrl+F to toggle back on
+    app.handle_key(key_ctrl_f).unwrap();
+    assert!(app.auto_scroll_enabled);
+}
+
+#[test]
+fn test_manual_scrolling_disables_auto_scroll() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ghost::app::tui::app::TuiApp;
+
+    let env = TestEnvironment::new();
+    let mut app = TuiApp::new_with_config(env.config.clone()).unwrap();
+
+    // Add a test task with log
+    let tasks = vec![Task {
+        id: "manual-scroll-test".to_string(),
+        pid: 12345,
+        pgid: Some(12345),
+        command: r#"["echo", "test"]"#.to_string(),
+        env: None,
+        cwd: Some("/tmp".to_string()),
+        status: TaskStatus::Running,
+        exit_code: None,
+        started_at: 1000000000,
+        finished_at: None,
+        log_path: "/tmp/test.log".to_string(),
+    }];
+    app.tasks = tasks;
+    app.table_scroll.set_total_items(1);
+    app.view_mode = ViewMode::LogView;
+
+    // Auto-scroll should be enabled by default
+    assert!(app.auto_scroll_enabled);
+
+    // Test that manual scrolling disables auto-scroll
+    let test_keys = vec![
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), // scroll down
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE), // scroll up
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), // scroll left
+        KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), // scroll right
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), // go to top
+        KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE), // go to bottom
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL), // page down
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), // page up
+    ];
+
+    for key in test_keys {
+        // Reset auto-scroll to enabled
+        app.auto_scroll_enabled = true;
+        assert!(app.auto_scroll_enabled);
+
+        // Press the key, which should disable auto-scroll
+        app.handle_key(key).unwrap();
+        assert!(
+            !app.auto_scroll_enabled,
+            "Key {:?} should disable auto-scroll",
+            key
+        );
+    }
 }

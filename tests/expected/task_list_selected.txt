@@ -1,13 +1,12 @@
-┌ Ghost v0.0.1 [Filter: All] ─────────────────────────────────────────────┐
-│ ID       PID      Status    Started            Command                  │
-│ abc1234  12345    running   2024-01-01 11:40   npm run dev              │
-│ def6789  67890    exited    2024-01-01 11:10   cargo build              │
-│ ghi1111  11111    killed    2024-01-01 10:40   python script.py         │
-│                                                                         │
+┌ Ghost v0.2.0 [Filter: All] ─────────────────────────────────────────────┐
+│ Star  ID    PID   Statu  Dura  Port  Dire  Command                      │
+│ 2024  abc1  1234  runni  632d  -     -     echo hello                   │
+│ 2024  def6  6789  exite  1m0s  -     -     cargo build                  │
+│ 2024  ghi1  1111  kille  1m0s  -     -     python script.py             │
 │                                                                         │
 │                                                                         │
 │                                                                         │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ j/k:Move  g/G:Top/Bot  l/Enter:Log  s/C-k:Stop  /:Search  C-g:Grep  q:Qu│
+│ j/k:Move  g/G:Top/Bot  Enter:Log  d:Details  o:Open  r:Restart  R:Rerun │
 └─────────────────────────────────────────────────────────────────────────┘

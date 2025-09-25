@@ -1,29 +1,32 @@
 [package]
 name = "ghost"
-version = "0.0.10"
+version = "0.2.0"
 authors = ["skanehira"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-clap = { version = "4.5.31", features = ["derive"] }
-uuid = { version = "1.11", features = ["v4"] }
+clap = { version = "4.5.48", features = ["derive"] }
+uuid = { version = "1.18", features = ["v4"] }
 thiserror = "2.0"
 dirs = "6.0"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"
-tokio = { version = "1.46", features = ["full"] }
+tokio = { version = "1.47", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
-notify = "8.1"
+notify = "8.2"
 ratatui = "0.29"
 crossterm = { version = "0.29", features = ["event-stream"] }
 tui-scrollview = "0.5.1"
 nix = { version = "0.30", features = ["signal", "process"] }
 regex = "1.11"
+rust-mcp-sdk = { version = "0.7", default-features = false, features = ["server", "macros", "2025_06_18"] }
+rust-mcp-transport = { version = "0.6", default-features = false, features = ["stdio"] }
+async-trait = "0.1"
 
 [dev-dependencies]
-tempfile = "3.14"
+tempfile = "3.22"
 pretty_assertions = "1.4"
 regex = "1.11"

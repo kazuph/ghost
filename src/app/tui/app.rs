@@ -1,8 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fs;
+use std::process::Child;
 use std::time::SystemTime;
 use tui_scrollview::ScrollViewState;
 
@@ -42,6 +43,7 @@ pub struct TuiApp {
     pub last_render_area: Rect,
     conn: Connection,
     log_cache: HashMap<String, LogCache>,
+    child_processes: HashMap<String, Child>,
     // Cache for web server port info keyed by PID to avoid expensive lookups in render
     pub port_cache: HashMap<u32, String>,
     pub search_query: String,
@@ -51,7 +53,7 @@ pub struct TuiApp {
     pub current_log_task: Option<Task>,  // ログビュー中の選択されたタスク
     pub search_type: Option<SearchType>, // 検索のタイプ
     pub confirmation_dialog: Option<ConfirmationDialog>, // 確認ダイアログの状態
-    pub log_auto_scroll: bool,           // ログの自動スクロール機能（tail -f モード）
+    pub auto_scroll_enabled: bool,       // ログの自動スクロール機能（tail -f モード）
     // 非Runningフィルタ用の表示期間（時間）。Noneの場合は既定(24h)を使う
     non_running_window_hours: u64,
 }
@@ -75,6 +77,7 @@ impl TuiApp {
             last_render_area: Rect::default(),
             conn,
             log_cache: HashMap::new(),
+            child_processes: HashMap::new(),
             port_cache: HashMap::new(),
             search_query: String::new(),
             previous_view_mode: ViewMode::TaskList,
@@ -83,7 +86,7 @@ impl TuiApp {
             current_log_task: None,
             search_type: None,
             confirmation_dialog: None,
-            log_auto_scroll: false,
+            auto_scroll_enabled: true,
             non_running_window_hours: 24,
         })
     }
@@ -107,6 +110,7 @@ impl TuiApp {
             last_render_area: Rect::default(),
             conn,
             log_cache: HashMap::new(),
+            child_processes: HashMap::new(),
             port_cache: HashMap::new(),
             search_query: String::new(),
             previous_view_mode: ViewMode::TaskList,
@@ -115,7 +119,7 @@ impl TuiApp {
             current_log_task: None,
             search_type: None,
             confirmation_dialog: None,
-            log_auto_scroll: false,
+            auto_scroll_enabled: true,
             non_running_window_hours: 24,
         })
     }
@@ -132,6 +136,9 @@ impl TuiApp {
 
     /// Load tasks from database
     pub fn refresh_tasks(&mut self) -> Result<()> {
+        // Clean up finished child processes first
+        self.cleanup_finished_processes();
+
         // Filter status for database query
         let status_filter = match self.filter {
             TaskFilter::All => None,
@@ -142,11 +149,14 @@ impl TuiApp {
 
         // Running は全期間。他は指定ウィンドウ(既定24h、または -d 指定の25h×日数)
         if matches!(self.filter, TaskFilter::Running) {
-            self.tasks = task_repository::get_tasks_with_process_check(&self.conn, status_filter, true)?;
+            self.tasks =
+                task_repository::get_tasks_with_process_check(&self.conn, status_filter, true)?;
         } else {
             // 現在時刻からウィンドウ分を差し引いた閾値を計算
             let since = chrono::Utc::now()
-                .checked_sub_signed(chrono::Duration::hours(self.non_running_window_hours as i64))
+                .checked_sub_signed(chrono::Duration::hours(
+                    self.non_running_window_hours as i64,
+                ))
                 .unwrap()
                 .timestamp();
             self.tasks = task_repository::get_tasks_with_process_check_since(
@@ -298,7 +308,14 @@ impl TuiApp {
                     }
                 }
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('l') if key.modifiers.is_empty() => {
+                let display_tasks = self.get_display_tasks();
+                if !display_tasks.is_empty() {
+                    self.view_mode = ViewMode::LogView;
+                    self.initialize_log_view();
+                }
+            }
+            KeyCode::Char('r') if key.modifiers.is_empty() => {
                 if !self.tasks.is_empty() {
                     let display_tasks = self.get_display_tasks();
                     if !display_tasks.is_empty() {
@@ -306,6 +323,9 @@ impl TuiApp {
                         self.show_restart_confirmation(selected_task);
                     }
                 }
+            }
+            KeyCode::Char('R') => {
+                self.rerun_selected_command()?;
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let page_size = self.calculate_table_page_size();
@@ -343,23 +363,25 @@ impl TuiApp {
                 // Clear the current log task
                 self.current_log_task = None;
                 // Reset auto-scroll
-                self.log_auto_scroll = false;
+                self.auto_scroll_enabled = false;
             }
             KeyCode::Char('j') => {
                 self.log_scroll_state.scroll_down();
                 // Manual scrolling disables auto-scroll
-                self.log_auto_scroll = false;
+                self.auto_scroll_enabled = false;
             }
             KeyCode::Char('k') => {
                 self.log_scroll_state.scroll_up();
                 // Manual scrolling disables auto-scroll
-                self.log_auto_scroll = false;
+                self.auto_scroll_enabled = false;
             }
             KeyCode::Char('h') => {
                 self.log_scroll_state.scroll_left();
+                self.auto_scroll_enabled = false;
             }
             KeyCode::Char('l') => {
                 self.log_scroll_state.scroll_right();
+                self.auto_scroll_enabled = false;
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Scroll down multiple lines (half page)
@@ -367,7 +389,7 @@ impl TuiApp {
                     self.log_scroll_state.scroll_down();
                 }
                 // Manual scrolling disables auto-scroll
-                self.log_auto_scroll = false;
+                self.auto_scroll_enabled = false;
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Scroll up multiple lines (half page)
@@ -375,22 +397,22 @@ impl TuiApp {
                     self.log_scroll_state.scroll_up();
                 }
                 // Manual scrolling disables auto-scroll
-                self.log_auto_scroll = false;
+                self.auto_scroll_enabled = false;
             }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::NONE) => {
                 self.log_scroll_state.scroll_to_top();
                 // Manual scrolling disables auto-scroll
-                self.log_auto_scroll = false;
+                self.auto_scroll_enabled = false;
             }
             KeyCode::Char('G') => {
                 self.log_scroll_state.scroll_to_bottom();
                 // When jumping to bottom, could enable auto-scroll
-                // but let's keep it manual for now
+                self.auto_scroll_enabled = false;
             }
-            KeyCode::Char('f') => {
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Toggle auto-scroll mode (like tail -f)
-                self.log_auto_scroll = !self.log_auto_scroll;
-                if self.log_auto_scroll {
+                self.auto_scroll_enabled = !self.auto_scroll_enabled;
+                if self.auto_scroll_enabled {
                     // When enabling auto-scroll, jump to bottom
                     self.log_scroll_state.scroll_to_bottom();
                 }
@@ -550,31 +572,28 @@ impl TuiApp {
     }
 
     fn initialize_log_view(&mut self) {
-        if let Some(selected) = self.table_scroll.selected() {
-            let display_tasks = self.get_display_tasks();
-            if selected < display_tasks.len() {
-                let selected_task = &display_tasks[selected];
+        let display_tasks = self.get_display_tasks();
+        let selected_task = self
+            .table_scroll
+            .selected()
+            .and_then(|idx| display_tasks.get(idx))
+            .or_else(|| display_tasks.first());
 
-                // Save the selected task for log view
-                self.current_log_task = Some(selected_task.clone());
+        if let Some(task) = selected_task {
+            self.current_log_task = Some(task.clone());
 
-                let log_path = &selected_task.log_path;
-
-                // Check cache first
-                if let Some(cache) = self.log_cache.get(log_path) {
-                    self.log_lines_count = cache.content.len();
-                } else {
-                    // If not in cache, we'll load it on first render
-                    self.log_lines_count = 0;
-                }
-
-                // Reset scroll state to start from the top
-                self.log_scroll_state.scroll_to_top();
-
-                // Reset auto-scroll when opening log view
-                self.log_auto_scroll = false;
+            if let Some(cache) = self.log_cache.get(&task.log_path) {
+                self.log_lines_count = cache.content.len();
+            } else {
+                self.log_lines_count = 0;
             }
+        } else {
+            self.current_log_task = None;
+            self.log_lines_count = 0;
         }
+
+        self.log_scroll_state.scroll_to_top();
+        self.auto_scroll_enabled = true;
     }
 
     /// Render the TUI
@@ -606,7 +625,12 @@ impl TuiApp {
                 self.search_query.clone(),
             )
         } else {
-            TaskListWidget::new(display_tasks, &self.filter, &mut self.table_scroll, &self.port_cache)
+            TaskListWidget::new(
+                display_tasks,
+                &self.filter,
+                &mut self.table_scroll,
+                &self.port_cache,
+            )
         };
         frame.render_widget(widget, area);
     }
@@ -694,6 +718,20 @@ impl TuiApp {
 
     /// Render log view widget
     fn render_log_view(&mut self, frame: &mut Frame, area: Rect) {
+        if self.current_log_task.is_none() {
+            let display_tasks = self.get_display_tasks();
+            if let Some(task) = self
+                .table_scroll
+                .selected()
+                .and_then(|idx| display_tasks.get(idx))
+                .cloned()
+                .or_else(|| display_tasks.first().cloned())
+            {
+                self.current_log_task = Some(task);
+                self.log_scroll_state.scroll_to_top();
+            }
+        }
+
         if let Some(ref selected_task) = self.current_log_task {
             let log_path = &selected_task.log_path;
 
@@ -726,18 +764,25 @@ impl TuiApp {
 
             // Use scrollview widget
             let scrollview_widget = match update_strategy {
-                UpdateStrategy::FullReload => LogViewerScrollWidget::new(selected_task),
+                UpdateStrategy::FullReload => {
+                    LogViewerScrollWidget::new(selected_task, self.auto_scroll_enabled)
+                }
                 UpdateStrategy::Incremental(previous_size) => {
                     let cache = self.log_cache.get(log_path).unwrap();
                     LogViewerScrollWidget::load_incremental_content(
                         selected_task,
                         cache.content.clone(),
                         previous_size,
+                        self.auto_scroll_enabled,
                     )
                 }
                 UpdateStrategy::UseCache => {
                     let cache = self.log_cache.get(log_path).unwrap();
-                    LogViewerScrollWidget::with_cached_content(selected_task, cache.content.clone())
+                    LogViewerScrollWidget::with_cached_content(
+                        selected_task,
+                        cache.content.clone(),
+                        self.auto_scroll_enabled,
+                    )
                 }
             };
 
@@ -745,58 +790,30 @@ impl TuiApp {
             if matches!(
                 update_strategy,
                 UpdateStrategy::FullReload | UpdateStrategy::Incremental(_)
-            ) {
-                if let Ok(metadata) = fs::metadata(log_path) {
-                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    self.log_cache.insert(
-                        log_path.clone(),
-                        LogCache {
-                            content: scrollview_widget.get_lines().to_vec(),
-                            last_modified: modified,
-                            file_size: metadata.len(),
-                        },
-                    );
-                }
+            ) && let Ok(metadata) = fs::metadata(log_path)
+            {
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                self.log_cache.insert(
+                    log_path.clone(),
+                    LogCache {
+                        content: scrollview_widget.get_lines().to_vec(),
+                        last_modified: modified,
+                        file_size: metadata.len(),
+                    },
+                );
             }
 
-            // Update line count
+            // Update line count and auto-scroll if needed
             let new_lines_count = scrollview_widget.get_lines_count();
             let lines_added = new_lines_count > self.log_lines_count;
             self.log_lines_count = new_lines_count;
 
-            // Auto-scroll to bottom if enabled and new content was added
-            if self.log_auto_scroll && lines_added {
+            if self.auto_scroll_enabled && lines_added {
                 self.log_scroll_state.scroll_to_bottom();
             }
 
             // Render with scrollview state
             frame.render_stateful_widget(scrollview_widget, area, &mut self.log_scroll_state);
-
-            // Show auto-scroll indicator
-            if self.log_auto_scroll {
-                use ratatui::{
-                    style::{Color, Style},
-                    text::{Line, Span},
-                    widgets::Paragraph,
-                };
-
-                // Create a small indicator in the top-right corner
-                let indicator_width = 14; // " [Auto-Scroll] "
-                let indicator_height = 1;
-                let x = area.right().saturating_sub(indicator_width + 1);
-                let y = area.y + 1;
-
-                if x > area.x && y < area.bottom() {
-                    let indicator_area = Rect::new(x, y, indicator_width, indicator_height);
-
-                    let indicator = Paragraph::new(Line::from(vec![
-                        Span::styled(" ", Style::default()),
-                        Span::styled("[Auto-Scroll]", Style::default().fg(Color::Yellow)),
-                    ]));
-
-                    frame.render_widget(indicator, indicator_area);
-                }
-            }
         }
     }
 
@@ -813,7 +830,7 @@ impl TuiApp {
 
             // Send signal to stop the task (commands::stop handles process group killing)
             // Use show_output=false to suppress console output in TUI
-            let _ = crate::app::commands::stop(task_id, force, false);
+            let _ = crate::app::commands::stop_with_conn(&self.conn, task_id, force, false);
 
             // Refresh task list to update status
             let _ = self.refresh_tasks();
@@ -923,7 +940,6 @@ impl TuiApp {
         let overhead = 5;
         self.last_render_area.height.saturating_sub(overhead) as usize
     }
-
     /// Extract web server info and open browser for selected task
     fn open_browser_for_task(&self, task: &Task) {
         if let Some(port_info) = crate::app::helpers::extract_web_server_info(task.pid) {
@@ -1023,7 +1039,8 @@ impl TuiApp {
                     task.pgid,
                     false, // Use SIGTERM first
                     Duration::from_secs(5),
-                )?;
+                )
+                .unwrap_or(false);
 
                 if !terminated {
                     // If process didn't terminate, try SIGKILL
@@ -1036,9 +1053,8 @@ impl TuiApp {
                 }
 
                 // Update task status in database
-                let conn = crate::app::storage::init_database()?;
                 crate::app::storage::update_task_status(
-                    &conn,
+                    &self.conn,
                     &dialog.task_id,
                     crate::app::storage::TaskStatus::Killed,
                     None,
@@ -1046,7 +1062,9 @@ impl TuiApp {
 
                 // Start the task again with original working directory and environment
                 let cwd_path = cwd.map(std::path::PathBuf::from);
-                match crate::app::commands::spawn(command, cwd_path, env) {
+                match crate::app::commands::spawn_with_conn(
+                    &self.conn, command, cwd_path, env, false, false,
+                ) {
                     Ok(_) => {
                         // Success - the spawn function already verifies the process started
                     }
@@ -1062,7 +1080,9 @@ impl TuiApp {
             super::ConfirmationAction::Rerun => {
                 // Run the command again with original working directory and environment
                 let cwd_path = cwd.map(std::path::PathBuf::from);
-                match crate::app::commands::spawn(command, cwd_path, env) {
+                match crate::app::commands::spawn_with_conn(
+                    &self.conn, command, cwd_path, env, false, false,
+                ) {
                     Ok(_) => {
                         // Success - the spawn function already verifies the process started
                     }
@@ -1081,6 +1101,58 @@ impl TuiApp {
         self.refresh_tasks()?;
 
         Ok(())
+    }
+
+    /// Rerun the selected task without confirmation (Shift+R shortcut)
+    fn rerun_selected_command(&mut self) -> Result<()> {
+        let display_tasks = self.get_display_tasks();
+        if display_tasks.is_empty() {
+            return Ok(());
+        }
+
+        let index = self.selected_index();
+        if index >= display_tasks.len() {
+            return Ok(());
+        }
+
+        let selected_task = &display_tasks[index];
+
+        let command: Vec<String> = serde_json::from_str(&selected_task.command).map_err(|e| {
+            crate::app::error::GhostError::InvalidArgument {
+                message: format!("Failed to parse command JSON: {e}"),
+            }
+        })?;
+
+        let env_pairs: Vec<(String, String)> = if let Some(env_json) = &selected_task.env {
+            serde_json::from_str(env_json).map_err(|e| {
+                crate::app::error::GhostError::InvalidArgument {
+                    message: format!("Failed to parse environment JSON: {e}"),
+                }
+            })?
+        } else {
+            Vec::new()
+        };
+
+        let cwd = selected_task.cwd.as_ref().map(std::path::PathBuf::from);
+
+        let (process_info, child) = crate::app::commands::spawn_with_shell_wrapper(
+            command, cwd, env_pairs, &self.conn, false,
+        )?;
+
+        self.child_processes.insert(process_info.id.clone(), child);
+
+        self.refresh_tasks()?;
+
+        Ok(())
+    }
+
+    /// Clean up finished child processes to prevent zombies when rerunning tasks.
+    fn cleanup_finished_processes(&mut self) {
+        self.child_processes
+            .retain(|_, child| match child.try_wait() {
+                Ok(Some(_)) | Err(_) => false,
+                Ok(None) => true,
+            });
     }
 
     /// Get task by ID
