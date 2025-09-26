@@ -75,16 +75,10 @@ pub fn spawn_with_conn(
         display::print_process_started(&process_info.id, process_info.pid, &process_info.log_path);
     }
 
-    // Spawn a background waiter to avoid zombies. Prefer Tokio if a runtime is active.
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn_blocking(move || {
-            let _ = child.wait();
-        });
-    } else {
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
+    // Spawn a detached thread to reap the child once it exits so the main command can return immediately.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 
     Ok(process_info)
 }
