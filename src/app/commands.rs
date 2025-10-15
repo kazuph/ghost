@@ -26,11 +26,54 @@ fn get_user_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
 }
 
+/// Escape arguments so they remain intact when passed through a shell.
+fn shell_escape(argument: &str) -> String {
+    if argument.is_empty() {
+        return "''".to_string();
+    }
+
+    let is_safe = argument.chars().all(|c| {
+        matches!(
+            c,
+            'a'..='z'
+                | 'A'..='Z'
+                | '0'..='9'
+                | '_'
+                | '-'
+                | '.'
+                | '/'
+                | ':'
+                | '='
+                | '@'
+                | '+'
+                | ','
+                | '%'
+        )
+    });
+
+    if is_safe {
+        return argument.to_string();
+    }
+
+    let mut escaped = String::with_capacity(argument.len() + 2);
+    escaped.push('\'');
+    for ch in argument.chars() {
+        if ch == '\'' {
+            escaped.push_str("'\\''");
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped.push('\'');
+    escaped
+}
+
 /// Wrap all commands with the user's shell for consistent behavior
 /// Uses login shell (-l) to load shell configuration files (.zshrc, .bashrc, etc.)
 fn wrap_with_user_shell(command: Vec<String>) -> Vec<String> {
     let shell = get_user_shell();
-    let command_str = command.join(" ");
+    let escaped_command: Vec<String> = command.iter().map(|arg| shell_escape(arg)).collect();
+    let command_str = escaped_command.join(" ");
     vec![shell, "-lc".to_string(), command_str]
 }
 
