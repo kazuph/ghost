@@ -6,12 +6,14 @@ pub mod task_list;
 
 use self::table_state_scroll::TableScroll;
 use crate::app::storage::task::Task;
+use crate::app::tui::app::PortCacheEntry;
 
 pub struct App {
     pub tasks: Vec<Task>,
     pub selected_index: usize,
     pub filter: TaskFilter,
     pub table_scroll: TableScroll,
+    pub port_cache: std::collections::HashMap<u32, PortCacheEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,6 +68,7 @@ impl App {
             selected_index: 0,
             filter: TaskFilter::All,
             table_scroll: TableScroll::new(),
+            port_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -76,6 +79,7 @@ impl App {
             selected_index: 0,
             filter: TaskFilter::All,
             table_scroll,
+            port_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -89,6 +93,7 @@ impl App {
             selected_index: 0,
             filter: TaskFilter::All,
             table_scroll,
+            port_cache: std::collections::HashMap::new(),
         }
     }
 }

@@ -1,4 +1,5 @@
 use crate::app::error::{GhostError, Result};
+use crate::app::helpers::port_utils::collect_descendant_pids;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -109,6 +110,23 @@ pub fn detect_listening_ports(pid: u32) -> Result<Vec<ListeningPort>> {
     return Ok(Vec::new());
 }
 
+/// Detect listening ports for a process **and its descendants** (used in detail view)
+pub fn detect_listening_ports_recursive(pid: u32) -> Result<Vec<ListeningPort>> {
+    // Check if lsof is available
+    check_lsof_availability()?;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let pids = collect_descendant_pids(pid);
+        return detect_ports_using_lsof_multi(&pids);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 /// Common implementation for macOS and Linux using lsof
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn detect_ports_using_lsof(pid: u32) -> Result<Vec<ListeningPort>> {
@@ -121,6 +139,34 @@ fn detect_ports_using_lsof(pid: u32) -> Result<Vec<ListeningPort>> {
 
     if !output.status.success() {
         // Process might not have any network connections
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_lsof_machine_format(&stdout))
+}
+
+/// Multi-pid variant to inspect parent+child processes in one lsof call
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn detect_ports_using_lsof_multi(pids: &[u32]) -> Result<Vec<ListeningPort>> {
+    if pids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let pid_arg = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let output = Command::new("lsof")
+        .args(["-nP", "-i", "-a", "-p", &pid_arg, "-F"])
+        .output()
+        .map_err(|e| GhostError::ProcessOperation {
+            message: format!("Failed to execute lsof: {e}"),
+        })?;
+
+    if !output.status.success() {
         return Ok(Vec::new());
     }
 

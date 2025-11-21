@@ -532,7 +532,7 @@ fn format_status_list(statuses: &[storage::TaskStatus]) -> String {
 /// Start TUI mode
 pub async fn tui(day_window: Option<u64>) -> Result<()> {
     use crossterm::{
-        event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream},
+        event::{Event, EventStream},
         execute,
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     };
@@ -546,7 +546,7 @@ pub async fn tui(day_window: Option<u64>) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -593,11 +593,7 @@ pub async fn tui(day_window: Option<u64>) -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result

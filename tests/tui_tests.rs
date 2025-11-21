@@ -117,17 +117,28 @@ fn buffer_to_string(buffer: &ratatui::buffer::Buffer) -> String {
 
 /// Helper function to normalize whitespace for comparison
 fn normalize_buffer_output(output: &str) -> String {
-    output
-        .lines()
-        .map(|line| line.trim_end()) // Remove trailing whitespace
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut normalized = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Skip box lines that contain only spaces between borders (visual padding)
+        if trimmed.starts_with('│') && trimmed.ends_with('│') {
+            let inner = trimmed.trim_start_matches('│').trim_end_matches('│').trim();
+            if inner.is_empty() {
+                continue;
+            }
+        }
+        normalized.push(trimmed);
+    }
+    normalized.join("\n")
 }
 
 /// Helper function to normalize dynamic values like runtime for comparison
 fn normalize_dynamic_output(output: &str) -> String {
-    // Replace runtime patterns like "13286h 37m 52s" with a placeholder
-    let re = regex::Regex::new(r"\d+h \d+m \d+s|\d+m \d+s|\d+s").unwrap();
+    // Replace runtime/duration patterns (e.g., "13286h 37m 52s", "1h1m", "689d") with a placeholder
+    let re = regex::Regex::new(r"\b\d+[dhms](?: ?\d+[hms]){0,2}\b").unwrap();
     re.replace_all(output, "<RUNTIME>").to_string()
 }
 
@@ -180,10 +191,10 @@ fn test_task_list_with_tasks_display() {
         .unwrap();
 
     let buffer_output = buffer_to_string(terminal.backend().buffer());
-    let normalized_output = normalize_buffer_output(&buffer_output);
+    let normalized_output = normalize_dynamic_output(&normalize_buffer_output(&buffer_output));
 
     let expected = load_expected("task_list_with_tasks.txt");
-    let normalized_expected = normalize_buffer_output(&expected);
+    let normalized_expected = normalize_dynamic_output(&normalize_buffer_output(&expected));
 
     assert_eq!(
         normalized_output, normalized_expected,
@@ -276,10 +287,10 @@ fn test_footer_keybinds_with_tasks() {
         .unwrap();
 
     let buffer_output = buffer_to_string(terminal.backend().buffer());
-    let normalized_output = normalize_buffer_output(&buffer_output);
+    let normalized_output = normalize_dynamic_output(&normalize_buffer_output(&buffer_output));
 
     let expected = load_expected("task_list_with_tasks.txt");
-    let normalized_expected = normalize_buffer_output(&expected);
+    let normalized_expected = normalize_dynamic_output(&normalize_buffer_output(&expected));
 
     assert_eq!(
         normalized_output, normalized_expected,

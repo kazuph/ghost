@@ -1,10 +1,13 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Frame, layout::Rect};
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::fs;
 use std::process::Child;
 use std::time::SystemTime;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use tui_scrollview::ScrollViewState;
 
 use super::log_viewer_scrollview::LogViewerScrollWidget;
@@ -21,6 +24,11 @@ struct LogCache {
     content: Vec<String>,
     last_modified: SystemTime,
     file_size: u64,
+}
+
+pub struct PortCacheEntry {
+    pub value: String,
+    pub last_checked: Instant,
 }
 
 enum UpdateStrategy {
@@ -45,7 +53,7 @@ pub struct TuiApp {
     log_cache: HashMap<String, LogCache>,
     child_processes: HashMap<String, Child>,
     // Cache for web server port info keyed by PID to avoid expensive lookups in render
-    pub port_cache: HashMap<u32, String>,
+    pub port_cache: HashMap<u32, PortCacheEntry>,
     pub search_query: String,
     pub previous_view_mode: ViewMode,    // 検索モードから戻るため
     pub filtered_tasks: Vec<Task>,       // フィルタリング済みタスク
@@ -136,6 +144,9 @@ impl TuiApp {
 
     /// Load tasks from database
     pub fn refresh_tasks(&mut self) -> Result<()> {
+        const PORT_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+        const PORT_STALE_INTERVAL: Duration = Duration::from_secs(60);
+
         // Clean up finished child processes first
         self.cleanup_finished_processes();
 
@@ -167,8 +178,10 @@ impl TuiApp {
         }
 
         // Update (throttled) port cache for running tasks only to avoid heavy work in render.
-        // Strategy: populate cache entries for any running PID missing in cache; remove stale PIDs.
-        // We intentionally avoid refreshing existing entries every tick to reduce lsof/ps calls.
+        // Strategy:
+        //  - populate missing entries
+        //  - if cached value is "-" (not yet detected), retry every PORT_REFRESH_INTERVAL
+        //  - remove stale PIDs no longer running
         use std::collections::HashSet;
         let current_running_pids: HashSet<u32> = self
             .tasks
@@ -181,12 +194,36 @@ impl TuiApp {
         self.port_cache
             .retain(|pid, _| current_running_pids.contains(pid));
 
-        // Fill cache for missing PIDs only (one-shot; avoids blocking keystrokes)
+        let now = Instant::now();
+
+        // Fill or refresh cache under throttle
         for pid in current_running_pids {
-            if !self.port_cache.contains_key(&pid) {
+            let needs_refresh = match self.port_cache.get(&pid) {
+                None => true,
+                Some(entry) => {
+                    let stale = now.duration_since(entry.last_checked) >= PORT_STALE_INTERVAL;
+                    let likely_inspector = entry
+                        .value
+                        .trim_start_matches(':')
+                        .parse::<u16>()
+                        .map(|p| p >= 9000 && p <= 9999)
+                        .unwrap_or(false);
+                    let unresolved = entry.value == "-" || entry.value.is_empty();
+                    (unresolved && now.duration_since(entry.last_checked) >= PORT_REFRESH_INTERVAL)
+                        || (stale && likely_inspector)
+                }
+            };
+
+            if needs_refresh {
                 let port = crate::app::helpers::extract_web_server_info(pid)
                     .unwrap_or_else(|| "-".to_string());
-                self.port_cache.insert(pid, port);
+                self.port_cache.insert(
+                    pid,
+                    PortCacheEntry {
+                        value: port,
+                        last_checked: now,
+                    },
+                );
             }
         }
 
@@ -1176,12 +1213,6 @@ impl TuiApp {
         // First render the task list as background
         self.render_task_list(frame, area);
 
-        // Create a centered area for the dialog
-        let dialog_area = popup_area(area, 70, 35);
-
-        // Clear the dialog area
-        frame.render_widget(Clear, dialog_area);
-
         if let Some(ref dialog) = self.confirmation_dialog {
             // Dialog title and action
             let action_text = match dialog.action {
@@ -1199,7 +1230,6 @@ impl TuiApp {
             };
 
             let content = vec![
-                Line::from(""),
                 Line::from(vec![
                     Span::raw("Are you sure you want to "),
                     Span::styled(
@@ -1208,13 +1238,10 @@ impl TuiApp {
                     ),
                     Span::raw(" this task?"),
                 ]),
-                Line::from(""),
                 Line::from(vec![
                     Span::raw("Command: "),
                     Span::styled(command_text, Style::default().fg(Color::Cyan)),
                 ]),
-                Line::from(""),
-                Line::from(""),
             ];
 
             // Create buttons
@@ -1231,19 +1258,22 @@ impl TuiApp {
             };
 
             let button_line = Line::from(vec![
-                Span::raw("      "),
                 Span::styled("[ Yes ]", yes_style),
-                Span::raw("      "),
+                Span::raw("   "),
                 Span::styled("[ No ]", no_style),
-                Span::raw("      "),
             ]);
 
             let mut all_content = content;
             all_content.push(button_line);
-            all_content.push(Line::from(""));
             all_content.push(Line::from(
                 "h/j/k/l/Space: toggle | Enter: confirm | Esc: cancel",
             ));
+
+            // Create a centered area sized to the content to avoid trailing blank lines
+            let dialog_area = popup_area(area, 70, all_content.len() as u16);
+
+            // Clear the dialog area
+            frame.render_widget(Clear, dialog_area);
 
             // Create the dialog widget
             let dialog_widget = Paragraph::new(all_content)
@@ -1256,16 +1286,22 @@ impl TuiApp {
     }
 }
 
-/// Create a centered popup area
-fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+/// Create a centered popup area sized to content lines
+fn popup_area(area: Rect, percent_x: u16, content_lines: u16) -> Rect {
     use ratatui::layout::{Constraint, Direction, Layout};
+
+    // height = content lines + top/bottom borders
+    let required_height = content_lines.saturating_add(2);
+    let height = required_height.min(area.height);
+    let top_padding = (area.height.saturating_sub(height)) / 2;
+    let bottom_padding = area.height.saturating_sub(height + top_padding);
 
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Length(top_padding),
+            Constraint::Length(height),
+            Constraint::Length(bottom_padding),
         ])
         .split(area);
 

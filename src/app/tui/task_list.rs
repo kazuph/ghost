@@ -30,15 +30,15 @@ const COLUMN_CONSTRAINTS: [Constraint; 8] = [
 use super::{App, TaskFilter, table_state_scroll::TableScroll};
 use crate::app::storage::task::Task;
 use crate::app::storage::task_status::TaskStatus;
+use crate::app::tui::app::PortCacheEntry;
 
 impl App {
     pub fn render_task_list(&mut self, frame: &mut Frame, area: Rect) {
-        let empty_cache: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
         let task_list_widget = TaskListWidget::new(
             self.tasks.clone(),
             &self.filter,
             &mut self.table_scroll,
-            &empty_cache,
+            &self.port_cache,
         );
         frame.render_widget(task_list_widget, area);
     }
@@ -48,7 +48,7 @@ pub struct TaskListWidget<'a> {
     tasks: Vec<Task>,
     filter: &'a TaskFilter,
     table_scroll: &'a mut TableScroll,
-    port_cache: &'a std::collections::HashMap<u32, String>,
+    port_cache: &'a std::collections::HashMap<u32, PortCacheEntry>,
     search_query: Option<String>, // 検索クエリ表示用
 }
 
@@ -57,7 +57,7 @@ impl<'a> TaskListWidget<'a> {
         tasks: Vec<Task>,
         filter: &'a TaskFilter,
         table_scroll: &'a mut TableScroll,
-        port_cache: &'a std::collections::HashMap<u32, String>,
+        port_cache: &'a std::collections::HashMap<u32, PortCacheEntry>,
     ) -> Self {
         Self {
             tasks,
@@ -72,7 +72,7 @@ impl<'a> TaskListWidget<'a> {
         tasks: Vec<Task>,
         filter: &'a TaskFilter,
         table_scroll: &'a mut TableScroll,
-        port_cache: &'a std::collections::HashMap<u32, String>,
+        port_cache: &'a std::collections::HashMap<u32, PortCacheEntry>,
         search_query: String,
     ) -> Self {
         Self {
@@ -307,7 +307,7 @@ impl<'a> TaskListWidget<'a> {
                     let port_info = if task.status == TaskStatus::Running {
                         self.port_cache
                             .get(&task.pid)
-                            .cloned()
+                            .map(|entry| entry.value.clone())
                             .unwrap_or_else(|| "-".to_string())
                     } else {
                         "-".to_string()

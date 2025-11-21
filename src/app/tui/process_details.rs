@@ -8,7 +8,8 @@ use ratatui::{
 };
 use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
 
-use crate::app::port_detector::detect_listening_ports;
+use crate::app::helpers::port_utils::{ProcInfo, collect_process_tree};
+use crate::app::port_detector::detect_listening_ports_recursive;
 use crate::app::storage::task::Task;
 use crate::app::storage::task_status::TaskStatus;
 use chrono::{TimeZone, Utc};
@@ -36,9 +37,10 @@ impl<'a> ProcessDetailsWidget<'a> {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(9), // Basic info section (7 lines + 2 borders)
-                Constraint::Length(5), // Listening ports section
-                Constraint::Min(5),    // Environment variables section
+                Constraint::Length(9), // Basic info section
+                Constraint::Length(3), // Listening ports section
+                Constraint::Min(2),    // Process tree section
+                Constraint::Min(4),    // Environment variables section
                 Constraint::Length(2), // Footer
             ])
             .split(area);
@@ -49,11 +51,14 @@ impl<'a> ProcessDetailsWidget<'a> {
         // Render listening ports section
         self.render_listening_ports(frame, chunks[1]);
 
+        // Render process tree section
+        self.render_process_tree(frame, chunks[2]);
+
         // Render environment variables section
-        self.render_environment_variables(frame, chunks[2], env_scroll_state);
+        self.render_environment_variables(frame, chunks[3], env_scroll_state);
 
         // Render footer
-        self.render_footer(frame, chunks[3]);
+        self.render_footer(frame, chunks[4]);
     }
 
     fn render_basic_info(&self, frame: &mut Frame, area: Rect) {
@@ -154,8 +159,8 @@ impl<'a> ProcessDetailsWidget<'a> {
             .border_style(Style::default().fg(Color::Cyan));
 
         let port_lines = if self.task.status == TaskStatus::Running {
-            // Get actual listening ports for running processes
-            match detect_listening_ports(self.task.pid) {
+            // Get actual listening ports for running processes (including descendants)
+            match detect_listening_ports_recursive(self.task.pid) {
                 Ok(ports) => {
                     if ports.is_empty() {
                         vec![Line::from(Span::styled(
@@ -213,6 +218,36 @@ impl<'a> ProcessDetailsWidget<'a> {
             .block(block)
             .wrap(Wrap { trim: true });
 
+        frame.render_widget(paragraph, area);
+    }
+
+    fn render_process_tree(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .title(" Process Tree ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
+
+        if self.task.status != TaskStatus::Running {
+            let paragraph = Paragraph::new("Process not running")
+                .block(block)
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
+        let nodes = collect_process_tree(self.task.pid);
+        if nodes.is_empty() {
+            let paragraph = Paragraph::new("No process tree info available")
+                .block(block)
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
+        let tree_lines = build_tree_lines(&nodes, self.task.pid, 30);
+        let paragraph = Paragraph::new(tree_lines)
+            .block(block)
+            .wrap(Wrap { trim: true });
         frame.render_widget(paragraph, area);
     }
 
@@ -323,4 +358,52 @@ impl<'a> ProcessDetailsWidget<'a> {
 
         frame.render_widget(keybind_paragraph, area);
     }
+}
+
+fn build_tree_lines(nodes: &[ProcInfo], root: u32, max_lines: usize) -> Vec<Line<'static>> {
+    use std::collections::HashMap;
+
+    let mut children: HashMap<u32, Vec<&ProcInfo>> = HashMap::new();
+    for node in nodes {
+        children.entry(node.ppid).or_default().push(node);
+    }
+    for list in children.values_mut() {
+        list.sort_by_key(|n| n.pid);
+    }
+
+    let mut lines = Vec::new();
+    fn dfs(
+        pid: u32,
+        children: &HashMap<u32, Vec<&ProcInfo>>,
+        indent: usize,
+        lines: &mut Vec<Line<'static>>,
+        max_lines: usize,
+    ) {
+        if lines.len() >= max_lines {
+            return;
+        }
+        let prefix = "  ".repeat(indent);
+        let marker = if indent == 0 { "(root)" } else { "├" };
+        let cmd = children
+            .get(&pid)
+            .and_then(|v| v.first())
+            .map(|n| n.command.clone())
+            .unwrap_or_default();
+
+        lines.push(Line::from(format!("{prefix}{marker} {pid} {cmd}")));
+
+        if let Some(kids) = children.get(&pid) {
+            for child in kids {
+                dfs(child.pid, children, indent + 1, lines, max_lines);
+            }
+        }
+    }
+
+    dfs(root, &children, 0, &mut lines, max_lines);
+
+    if lines.len() >= max_lines {
+        lines.push(Line::from(format!("... (truncated at {max_lines} lines)")));
+    }
+
+    lines
 }
