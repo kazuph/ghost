@@ -11,9 +11,12 @@ use std::{
 use tui_scrollview::ScrollViewState;
 
 use super::log_viewer_scrollview::LogViewerScrollWidget;
+use super::port_details::PortDetailsWidget;
+use super::port_list::SystemPortListWidget;
 use super::table_state_scroll::TableScroll;
-use super::{ConfirmationDialog, SearchType, TaskFilter, ViewMode};
+use super::{ActivePanel, ConfirmationDialog, SearchType, TaskFilter, ViewMode};
 use crate::app::config::Config;
+use crate::app::port_detector::{self, SystemPort};
 use crate::app::error::Result;
 use crate::app::storage;
 use crate::app::storage::task::Task;
@@ -64,6 +67,12 @@ pub struct TuiApp {
     pub auto_scroll_enabled: bool,       // ログの自動スクロール機能（tail -f モード）
     // 非Runningフィルタ用の表示期間（時間）。Noneの場合は既定(24h)を使う
     non_running_window_hours: u64,
+    // システムポートリスト関連
+    pub system_ports: Vec<SystemPort>,
+    pub port_table_scroll: TableScroll,
+    pub active_panel: ActivePanel,
+    system_ports_cache_time: Option<Instant>,
+    pub selected_port: Option<SystemPort>, // ポート詳細表示用
 }
 
 impl TuiApp {
@@ -96,6 +105,11 @@ impl TuiApp {
             confirmation_dialog: None,
             auto_scroll_enabled: true,
             non_running_window_hours: 24,
+            system_ports: Vec::new(),
+            port_table_scroll: TableScroll::new(),
+            active_panel: ActivePanel::Tasks,
+            system_ports_cache_time: None,
+            selected_port: None,
         })
     }
 
@@ -129,6 +143,11 @@ impl TuiApp {
             confirmation_dialog: None,
             auto_scroll_enabled: true,
             non_running_window_hours: 24,
+            system_ports: Vec::new(),
+            port_table_scroll: TableScroll::new(),
+            active_panel: ActivePanel::Tasks,
+            system_ports_cache_time: None,
+            selected_port: None,
         })
     }
 
@@ -236,7 +255,47 @@ impl TuiApp {
         let display_tasks = self.get_display_tasks();
         self.table_scroll.set_total_items(display_tasks.len());
 
+        // Refresh system ports (Ghost管理外のポート)
+        self.refresh_system_ports();
+
         Ok(())
+    }
+
+    /// Refresh system ports list (ports not managed by Ghost)
+    fn refresh_system_ports(&mut self) {
+        const SYSTEM_PORTS_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+
+        let now = Instant::now();
+
+        // Check if we need to refresh
+        let needs_refresh = match self.system_ports_cache_time {
+            None => true,
+            Some(last_time) => now.duration_since(last_time) >= SYSTEM_PORTS_REFRESH_INTERVAL,
+        };
+
+        if !needs_refresh {
+            return;
+        }
+
+        // Get PIDs of Ghost-managed running tasks to exclude
+        let exclude_pids: Vec<u32> = self
+            .tasks
+            .iter()
+            .filter(|t| t.status == crate::app::storage::task_status::TaskStatus::Running)
+            .map(|t| t.pid)
+            .collect();
+
+        // Detect all system listening ports (excluding Ghost-managed)
+        match port_detector::detect_all_listening_ports(&exclude_pids) {
+            Ok(ports) => {
+                self.system_ports = ports;
+                self.port_table_scroll.set_total_items(self.system_ports.len());
+                self.system_ports_cache_time = Some(now);
+            }
+            Err(_) => {
+                // Failed to detect ports, keep existing list
+            }
+        }
     }
 
     /// Handle keyboard input
@@ -245,6 +304,7 @@ impl TuiApp {
             ViewMode::TaskList => self.handle_task_list_key(key),
             ViewMode::LogView => self.handle_log_view_key(key),
             ViewMode::ProcessDetails => self.handle_process_details_key(key),
+            ViewMode::PortDetails => self.handle_port_details_key(key),
             ViewMode::SearchProcessName | ViewMode::SearchLogContent | ViewMode::SearchInLog => {
                 self.handle_search_key(key)
             }
@@ -281,38 +341,75 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('j') => {
-                self.table_scroll.next();
+                match self.active_panel {
+                    ActivePanel::Tasks => self.table_scroll.next(),
+                    ActivePanel::Ports => self.port_table_scroll.next(),
+                }
             }
             KeyCode::Char('k') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.table_scroll.previous();
+                match self.active_panel {
+                    ActivePanel::Tasks => self.table_scroll.previous(),
+                    ActivePanel::Ports => self.port_table_scroll.previous(),
+                }
             }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::NONE) => {
-                self.table_scroll.first();
+                match self.active_panel {
+                    ActivePanel::Tasks => self.table_scroll.first(),
+                    ActivePanel::Ports => self.port_table_scroll.first(),
+                }
             }
             KeyCode::Char('G') => {
-                self.table_scroll.last();
+                match self.active_panel {
+                    ActivePanel::Tasks => self.table_scroll.last(),
+                    ActivePanel::Ports => self.port_table_scroll.last(),
+                }
             }
             KeyCode::Enter => {
-                let display_tasks = self.get_display_tasks();
-                if !display_tasks.is_empty() {
-                    self.view_mode = ViewMode::LogView;
-                    self.initialize_log_view();
+                match self.active_panel {
+                    ActivePanel::Tasks => {
+                        let display_tasks = self.get_display_tasks();
+                        if !display_tasks.is_empty() {
+                            self.view_mode = ViewMode::LogView;
+                            self.initialize_log_view();
+                        }
+                    }
+                    ActivePanel::Ports => {
+                        // Enter opens port details (same as 'd')
+                        if let Some(idx) = self.port_table_scroll.selected() {
+                            if idx < self.system_ports.len() {
+                                self.selected_port = Some(self.system_ports[idx].clone());
+                                self.view_mode = ViewMode::PortDetails;
+                            }
+                        }
+                    }
                 }
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
             KeyCode::Char('s') => {
-                if !self.tasks.is_empty() {
+                // Only Tasks panel can stop from list view
+                // Ports must use detail view (d key) to stop
+                if self.active_panel == ActivePanel::Tasks && !self.tasks.is_empty() {
                     self.stop_task(false);
                 }
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if !self.tasks.is_empty() {
+                // Only Tasks panel can kill from list view
+                // Ports must use detail view (d key) to kill
+                if self.active_panel == ActivePanel::Tasks && !self.tasks.is_empty() {
                     self.stop_task(true);
                 }
             }
             KeyCode::Tab => {
+                // Toggle between Tasks and Ports panels
+                self.active_panel = match self.active_panel {
+                    ActivePanel::Tasks => ActivePanel::Ports,
+                    ActivePanel::Ports => ActivePanel::Tasks,
+                };
+            }
+            KeyCode::BackTab => {
+                // Shift+Tab cycles through filters (moved from Tab)
                 self.cycle_filter();
                 self.refresh_tasks()?;
             }
@@ -321,13 +418,25 @@ impl TuiApp {
                 self.table_scroll.page_down(page_size);
             }
             KeyCode::Char('d') => {
-                if !self.tasks.is_empty() {
-                    let display_tasks = self.get_display_tasks();
-                    if !display_tasks.is_empty() {
-                        let selected_task = &display_tasks[self.selected_index()];
-                        self.selected_task_id = Some(selected_task.id.clone());
-                        self.view_mode = ViewMode::ProcessDetails;
-                        self.env_scroll_state = ScrollViewState::default();
+                match self.active_panel {
+                    ActivePanel::Tasks => {
+                        if !self.tasks.is_empty() {
+                            let display_tasks = self.get_display_tasks();
+                            if !display_tasks.is_empty() {
+                                let selected_task = &display_tasks[self.selected_index()];
+                                self.selected_task_id = Some(selected_task.id.clone());
+                                self.view_mode = ViewMode::ProcessDetails;
+                                self.env_scroll_state = ScrollViewState::default();
+                            }
+                        }
+                    }
+                    ActivePanel::Ports => {
+                        if let Some(idx) = self.port_table_scroll.selected() {
+                            if idx < self.system_ports.len() {
+                                self.selected_port = Some(self.system_ports[idx].clone());
+                                self.view_mode = ViewMode::PortDetails;
+                            }
+                        }
                     }
                 }
             }
@@ -538,6 +647,79 @@ impl TuiApp {
         Ok(())
     }
 
+    fn handle_port_details_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                // Return to task list
+                self.view_mode = ViewMode::TaskList;
+                self.selected_port = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                // Move to next port in list
+                self.port_table_scroll.next();
+                self.update_selected_port();
+            }
+            KeyCode::Char('k') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Move to previous port in list
+                self.port_table_scroll.previous();
+                self.update_selected_port();
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::NONE) => {
+                // Jump to first port
+                self.port_table_scroll.first();
+                self.update_selected_port();
+            }
+            KeyCode::Char('G') => {
+                // Jump to last port
+                self.port_table_scroll.last();
+                self.update_selected_port();
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Kill (SIGKILL)
+                if let Some(port) = &self.selected_port {
+                    let pid = port.pid as i32;
+                    let _ = nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(pid),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                    self.system_ports_cache_time = None;
+                    self.view_mode = ViewMode::TaskList;
+                    self.selected_port = None;
+                    self.refresh_system_ports();
+                }
+            }
+            KeyCode::Char('s') => {
+                // Stop (SIGTERM)
+                if let Some(port) = &self.selected_port {
+                    let pid = port.pid as i32;
+                    let _ = nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(pid),
+                        nix::sys::signal::Signal::SIGTERM,
+                    );
+                    self.system_ports_cache_time = None;
+                    self.view_mode = ViewMode::TaskList;
+                    self.selected_port = None;
+                    self.refresh_system_ports();
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Update selected_port based on current port_table_scroll selection
+    fn update_selected_port(&mut self) {
+        if let Some(idx) = self.port_table_scroll.selected() {
+            if idx < self.system_ports.len() {
+                self.selected_port = Some(self.system_ports[idx].clone());
+            }
+        }
+    }
+
     fn handle_search_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -641,6 +823,7 @@ impl TuiApp {
             ViewMode::TaskList => self.render_task_list(frame, area),
             ViewMode::LogView => self.render_log_view(frame, area),
             ViewMode::ProcessDetails => self.render_process_details(frame, area),
+            ViewMode::PortDetails => self.render_port_details(frame, area),
             ViewMode::SearchProcessName | ViewMode::SearchLogContent | ViewMode::SearchInLog => {
                 self.render_search_mode(frame, area)
             }
@@ -648,28 +831,48 @@ impl TuiApp {
         }
     }
 
-    /// Render task list widget
+    /// Render task list widget with system ports panel
     fn render_task_list(&mut self, frame: &mut Frame, area: Rect) {
+        use ratatui::layout::{Constraint, Direction, Layout};
         use super::task_list::TaskListWidget;
 
+        // Split area 50:50 for tasks and system ports
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        // Render task list (top panel)
         let display_tasks = self.get_display_tasks();
-        let widget = if self.is_search_filtered && !self.search_query.is_empty() {
-            TaskListWidget::with_search(
+        let is_tasks_active = matches!(self.active_panel, ActivePanel::Tasks);
+        let task_widget = if self.is_search_filtered && !self.search_query.is_empty() {
+            TaskListWidget::with_search_and_active(
                 display_tasks,
                 &self.filter,
                 &mut self.table_scroll,
                 &self.port_cache,
                 self.search_query.clone(),
+                is_tasks_active,
             )
         } else {
-            TaskListWidget::new(
+            TaskListWidget::with_active(
                 display_tasks,
                 &self.filter,
                 &mut self.table_scroll,
                 &self.port_cache,
+                is_tasks_active,
             )
         };
-        frame.render_widget(widget, area);
+        frame.render_widget(task_widget, chunks[0]);
+
+        // Render system ports list (bottom panel)
+        let is_ports_active = matches!(self.active_panel, ActivePanel::Ports);
+        let port_widget = SystemPortListWidget::new(
+            self.system_ports.clone(),
+            &mut self.port_table_scroll,
+            is_ports_active,
+        );
+        frame.render_widget(port_widget, chunks[1]);
     }
 
     /// Render search mode UI
@@ -904,6 +1107,17 @@ impl TuiApp {
             }
         } else {
             // No task selected, go back to task list
+            self.view_mode = ViewMode::TaskList;
+        }
+    }
+
+    /// Render port details view
+    fn render_port_details(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(port) = &self.selected_port {
+            let widget = PortDetailsWidget::new(port);
+            widget.render(frame, area);
+        } else {
+            // No port selected, go back to task list
             self.view_mode = ViewMode::TaskList;
         }
     }

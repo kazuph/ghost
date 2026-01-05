@@ -50,6 +50,7 @@ pub struct TaskListWidget<'a> {
     table_scroll: &'a mut TableScroll,
     port_cache: &'a std::collections::HashMap<u32, PortCacheEntry>,
     search_query: Option<String>, // 検索クエリ表示用
+    is_active: bool,              // パネルがアクティブかどうか
 }
 
 impl<'a> TaskListWidget<'a> {
@@ -65,6 +66,24 @@ impl<'a> TaskListWidget<'a> {
             table_scroll,
             port_cache,
             search_query: None,
+            is_active: true, // Default to active for backwards compatibility
+        }
+    }
+
+    pub fn with_active(
+        tasks: Vec<Task>,
+        filter: &'a TaskFilter,
+        table_scroll: &'a mut TableScroll,
+        port_cache: &'a std::collections::HashMap<u32, PortCacheEntry>,
+        is_active: bool,
+    ) -> Self {
+        Self {
+            tasks,
+            filter,
+            table_scroll,
+            port_cache,
+            search_query: None,
+            is_active,
         }
     }
 
@@ -81,6 +100,25 @@ impl<'a> TaskListWidget<'a> {
             table_scroll,
             port_cache,
             search_query: Some(search_query),
+            is_active: true,
+        }
+    }
+
+    pub fn with_search_and_active(
+        tasks: Vec<Task>,
+        filter: &'a TaskFilter,
+        table_scroll: &'a mut TableScroll,
+        port_cache: &'a std::collections::HashMap<u32, PortCacheEntry>,
+        search_query: String,
+        is_active: bool,
+    ) -> Self {
+        Self {
+            tasks,
+            filter,
+            table_scroll,
+            port_cache,
+            search_query: Some(search_query),
+            is_active,
         }
     }
 
@@ -198,15 +236,21 @@ impl<'a> Widget for TaskListWidget<'a> {
     fn render(self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         let filter_name = self.filter_name();
         let title = format!(
-            " Ghost v{} [Filter: {filter_name}] ",
-            env!("CARGO_PKG_VERSION")
+            " Ghost Tasks [Filter: {filter_name}] ",
         );
+
+        // Border color based on active state
+        let border_color = if self.is_active {
+            Color::Green
+        } else {
+            Color::DarkGray
+        };
 
         // Create main block
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .border_style(Style::default().fg(Color::Green));
+            .border_style(Style::default().fg(border_color));
 
         // Get inner area for content
         let inner_area = block.inner(area);
@@ -326,13 +370,21 @@ impl<'a> TaskListWidget<'a> {
                 })
                 .collect();
 
-            let table = Table::new(rows, COLUMN_CONSTRAINTS)
-                .header(self.create_header_row())
-                .row_highlight_style(Style::default().bg(Color::DarkGray));
+            // Only show highlight if active
+            let table = if self.is_active {
+                Table::new(rows, COLUMN_CONSTRAINTS)
+                    .header(self.create_header_row())
+                    .row_highlight_style(Style::default().bg(Color::DarkGray))
+            } else {
+                Table::new(rows, COLUMN_CONSTRAINTS)
+                    .header(self.create_header_row())
+            };
 
             // Use a temporary table state and apply the selection
             let mut table_state = TableState::default();
-            table_state.select(self.table_scroll.selected());
+            if self.is_active {
+                table_state.select(self.table_scroll.selected());
+            }
             StatefulWidget::render(table, area, buf, &mut table_state);
         }
     }
@@ -344,13 +396,20 @@ impl<'a> TaskListWidget<'a> {
         width: u16,
         buf: &mut ratatui::buffer::Buffer,
     ) {
+        // Border color based on active state
+        let border_color = if self.is_active {
+            Color::Green
+        } else {
+            Color::DarkGray
+        };
+
         // Draw the separator line: ├─────...─────┤
         // Need to overwrite the left and right border characters
         buf[(x - 1, y)].set_symbol("├");
         for i in 0..width {
             buf[(x + i, y)]
                 .set_symbol("─")
-                .set_style(Style::default().fg(Color::Green));
+                .set_style(Style::default().fg(border_color));
         }
         buf[(x + width, y)].set_symbol("┤");
     }
