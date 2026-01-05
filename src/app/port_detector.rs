@@ -1,5 +1,6 @@
 use crate::app::error::{GhostError, Result};
 use crate::app::helpers::port_utils::collect_descendant_pids;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -8,6 +9,21 @@ pub struct ListeningPort {
     pub protocol: String,
     pub local_addr: String,
     pub state: String,
+}
+
+/// システム全体のポート情報（プロセス詳細付き）
+#[derive(Debug, Clone)]
+pub struct SystemPort {
+    pub port: u16,
+    pub protocol: String,
+    pub pid: u32,
+    pub process_name: String,
+    pub ppid: u32,
+    pub parent_name: String,
+    pub user: String,
+    pub memory_kb: Option<u64>,
+    pub cwd: Option<String>,
+    pub local_addr: String,
 }
 
 // Cache the lsof availability check result
@@ -172,6 +188,304 @@ fn detect_ports_using_lsof_multi(pids: &[u32]) -> Result<Vec<ListeningPort>> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_lsof_machine_format(&stdout))
+}
+
+/// システム全体のリスニングポートを取得（指定PIDを除外）
+///
+/// # Arguments
+/// * `exclude_pids` - 除外するPIDのリスト（Ghost管理プロセスのPID）
+///
+/// # Returns
+/// * `Vec<SystemPort>` - システム全体のリスニングポート情報
+pub fn detect_all_listening_ports(exclude_pids: &[u32]) -> Result<Vec<SystemPort>> {
+    check_lsof_availability()?;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    return detect_all_system_ports(exclude_pids);
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = exclude_pids;
+        Ok(Vec::new())
+    }
+}
+
+/// macOS/Linux向けのシステム全体ポート検出
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn detect_all_system_ports(exclude_pids: &[u32]) -> Result<Vec<SystemPort>> {
+    // lsof -i -P -n -sTCP:LISTEN でLISTEN状態のTCPポートを取得
+    // -F pcnRP でPID、コマンド名、ネットワーク情報、親PID、プロトコルを出力
+    let output = Command::new("lsof")
+        .args(["-i", "-P", "-n", "-sTCP:LISTEN", "+c", "0", "-F", "pcnRP"])
+        .output()
+        .map_err(|e| GhostError::ProcessOperation {
+            message: format!("Failed to execute lsof: {e}"),
+        })?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let exclude_set: HashSet<u32> = exclude_pids.iter().copied().collect();
+
+    // lsofの出力をパース
+    let mut ports = Vec::new();
+    let mut current_pid: u32 = 0;
+    let mut current_ppid: u32 = 0;
+    let mut current_command = String::new();
+    let mut current_protocol = String::new();
+    let mut current_addr = String::new();
+    let mut in_network_fd = false;
+
+    for line in stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+
+        let tag = &line[0..1];
+        let value = &line[1..];
+
+        match tag {
+            "p" => {
+                // PID
+                current_pid = value.parse().unwrap_or(0);
+                in_network_fd = false;
+            }
+            "R" => {
+                // Parent PID
+                current_ppid = value.parse().unwrap_or(0);
+            }
+            "c" => {
+                // Command name
+                current_command = value.to_string();
+            }
+            "f" => {
+                // File descriptor - reset network state
+                in_network_fd = false;
+                current_protocol.clear();
+                current_addr.clear();
+            }
+            "P" => {
+                // Protocol
+                current_protocol = value.to_lowercase();
+                in_network_fd = true;
+            }
+            "n" => {
+                // Network address
+                if in_network_fd && !exclude_set.contains(&current_pid) {
+                    current_addr = value.to_string();
+
+                    // Extract port number from address
+                    if let Some(port) = extract_port_from_addr(&current_addr) {
+                        ports.push(SystemPort {
+                            port,
+                            protocol: current_protocol.clone(),
+                            pid: current_pid,
+                            process_name: current_command.clone(),
+                            ppid: current_ppid,
+                            parent_name: String::new(), // Will be filled later
+                            user: String::new(),        // Will be filled later
+                            memory_kb: None,            // Will be filled later
+                            cwd: None,                  // Will be filled later
+                            local_addr: current_addr.clone(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 親プロセス名を取得
+    let unique_ppids: HashSet<u32> = ports.iter().map(|p| p.ppid).collect();
+    let parent_names = get_process_names(&unique_ppids.into_iter().collect::<Vec<_>>());
+
+    // CWDを取得
+    let unique_pids: Vec<u32> = ports.iter().map(|p| p.pid).collect::<HashSet<_>>().into_iter().collect();
+    let cwds = get_process_cwds(&unique_pids);
+
+    // ユーザー名とメモリ情報を取得
+    let user_memory_info = get_process_user_memory(&unique_pids);
+
+    // 現在のユーザー名を取得
+    let current_user = std::env::var("USER").unwrap_or_default();
+
+    // 情報を補完
+    for port in &mut ports {
+        if let Some(name) = parent_names.get(&port.ppid) {
+            port.parent_name = name.clone();
+        }
+        if let Some(cwd) = cwds.get(&port.pid) {
+            port.cwd = Some(cwd.clone());
+        }
+        if let Some((user, memory)) = user_memory_info.get(&port.pid) {
+            port.user = user.clone();
+            port.memory_kb = *memory;
+        }
+    }
+
+    // 重複除去（同じポートで複数のFDがある場合）
+    ports.dedup_by(|a, b| a.port == b.port && a.pid == b.pid);
+
+    // ソート: 現在のユーザーのプロセスを上に、その後ポート番号順
+    ports.sort_by(|a, b| {
+        let a_is_current_user = a.user == current_user;
+        let b_is_current_user = b.user == current_user;
+
+        match (a_is_current_user, b_is_current_user) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.port.cmp(&b.port),
+        }
+    });
+
+    Ok(ports)
+}
+
+/// アドレス文字列からポート番号を抽出
+fn extract_port_from_addr(addr: &str) -> Option<u16> {
+    // フォーマット例: "*:8080", "127.0.0.1:3000", "[::1]:5000", "[::]:8080"
+    if let Some(pos) = addr.rfind(':') {
+        let port_str = &addr[pos + 1..];
+        // "->" が含まれている場合は接続先なのでスキップ
+        if port_str.contains("->") {
+            return None;
+        }
+        port_str.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// 複数のPIDのプロセス名を取得
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn get_process_names(pids: &[u32]) -> HashMap<u32, String> {
+    let mut result = HashMap::new();
+    if pids.is_empty() {
+        return result;
+    }
+
+    // psコマンドで複数のプロセス名を一度に取得
+    let pid_args = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    if let Ok(output) = Command::new("ps")
+        .args(["-p", &pid_args, "-o", "pid=,comm="])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(pid) = parts[0].parse::<u32>() {
+                        result.insert(pid, parts[1..].join(" "));
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// 複数のPIDのCWDを取得
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn get_process_cwds(pids: &[u32]) -> HashMap<u32, String> {
+    let mut result = HashMap::new();
+    if pids.is_empty() {
+        return result;
+    }
+
+    // lsof -d cwd で複数プロセスのCWDを取得
+    let pid_args = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    if let Ok(output) = Command::new("lsof")
+        .args(["-d", "cwd", "-p", &pid_args, "-F", "pn"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut current_pid: u32 = 0;
+
+            for line in stdout.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                let tag = &line[0..1];
+                let value = &line[1..];
+
+                match tag {
+                    "p" => {
+                        current_pid = value.parse().unwrap_or(0);
+                    }
+                    "n" => {
+                        // Only accept values that look like directory paths (start with /)
+                        // Filter out network addresses like "*:mdns", "localhost:5173->..."
+                        if current_pid != 0
+                            && !value.is_empty()
+                            && value.starts_with('/')
+                            && !result.contains_key(&current_pid)
+                        {
+                            result.insert(current_pid, value.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// 複数のPIDのユーザー名とメモリ使用量を取得
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn get_process_user_memory(pids: &[u32]) -> HashMap<u32, (String, Option<u64>)> {
+    let mut result = HashMap::new();
+    if pids.is_empty() {
+        return result;
+    }
+
+    // psコマンドでユーザー名とRSS（メモリ使用量KB）を取得
+    let pid_args = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    if let Ok(output) = Command::new("ps")
+        .args(["-p", &pid_args, "-o", "pid=,user=,rss="])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(pid) = parts[0].parse::<u32>() {
+                        let user = parts[1].to_string();
+                        let memory = if parts.len() >= 3 {
+                            parts[2].parse::<u64>().ok()
+                        } else {
+                            None
+                        };
+                        result.insert(pid, (user, memory));
+                    }
+                }
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]

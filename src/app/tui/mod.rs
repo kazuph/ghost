@@ -1,8 +1,12 @@
 pub mod app;
 pub mod log_viewer_scrollview;
+pub mod port_details;
+pub mod port_list;
 pub mod process_details;
 pub mod table_state_scroll;
 pub mod task_list;
+
+pub use port_list::SystemPortListWidget;
 
 use self::table_state_scroll::TableScroll;
 use crate::app::storage::task::Task;
@@ -28,7 +32,8 @@ pub enum TaskFilter {
 pub enum ViewMode {
     TaskList,
     LogView,
-    ProcessDetails,     // dキーでプロセス詳細表示
+    ProcessDetails,     // dキーでプロセス詳細表示 (Ghost tasks)
+    PortDetails,        // dキーでポート詳細表示 (External ports)
     SearchProcessName,  // /キーでプロセス名検索
     SearchLogContent,   // gキーでログ内容検索
     SearchInLog,        // ログビューで/キーでログ内検索
@@ -53,6 +58,14 @@ pub struct ConfirmationDialog {
     pub task_id: String,
     pub task_command: String,
     pub selected_choice: bool, // true: Yes, false: No (default)
+}
+
+/// アクティブなパネル（タスクリスト or ポートリスト）
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ActivePanel {
+    #[default]
+    Tasks,
+    Ports,
 }
 
 impl Default for App {
